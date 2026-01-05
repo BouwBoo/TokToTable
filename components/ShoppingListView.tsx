@@ -44,18 +44,31 @@ const AISLES: Aisle[] = [
 const LS_AISLE_OVERRIDES = 'tokchef_aisle_overrides_v1';
 const LS_PANTRY = 'tokchef_pantry_v1';
 
-// Cost bundle storage
-// price is stored PER ingredientKey + unit, in EUR per unit (e.g. €/g, €/ml, €/pcs)
-const LS_PRICES = 'tokchef_prices_v1';
+// v1.4 legacy store (unit-specific)
+const LS_PRICES_V1 = 'tokchef_prices_v1';
 
-type PriceEntry = {
+// v1.5 normalized store (base unit: kg/l/pcs)
+const LS_PRICES_V2 = 'tokchef_prices_v2';
+
+type BaseUnit = 'kg' | 'l' | 'pcs';
+
+type NormalizedPriceEntry = {
   ingredientKey: string;
-  unit: string; // same unit as shopping item unit (e.g. g/ml/pcs)
-  pricePerUnit: number; // EUR per unit
+  baseUnit: BaseUnit; // kg/l/pcs
+  pricePerBaseUnit: number; // € per kg / l / pcs
   updatedAt: number;
 };
 
-type PriceMap = Record<string, PriceEntry>; // key = `${ingredientKey}::${unit}`
+type NormalizedPriceMap = Record<string, NormalizedPriceEntry>; // key = `${ingredientKey}::${baseUnit}`
+
+// Legacy (for migration)
+type LegacyPriceEntry = {
+  ingredientKey: string;
+  unit: string;
+  pricePerUnit: number;
+  updatedAt: number;
+};
+type LegacyPriceMap = Record<string, LegacyPriceEntry>;
 
 const formatQty = (qty: number) => {
   if (!Number.isFinite(qty)) return '';
@@ -74,13 +87,6 @@ const prettyAmount = (qty: number, unit: string): { qty: number; unit: string } 
   if (unit === 'g' && qty >= 1000) return { qty: qty / 1000, unit: 'kg' };
   if (unit === 'ml' && qty >= 1000) return { qty: qty / 1000, unit: 'l' };
   return { qty, unit };
-};
-
-const prettyPriceUnit = (unit: string, pricePerUnit: number): { unitLabel: string; price: number } => {
-  if (!Number.isFinite(pricePerUnit)) return { unitLabel: `€/${unit}`, price: pricePerUnit };
-  if (unit === 'g') return { unitLabel: '€/kg', price: pricePerUnit * 1000 };
-  if (unit === 'ml') return { unitLabel: '€/l', price: pricePerUnit * 1000 };
-  return { unitLabel: `€/${unit || 'unit'}`, price: pricePerUnit };
 };
 
 const dayShort = (day?: string) => {
@@ -159,8 +165,46 @@ const inferAisle = (label: string, key: string): Aisle => {
   return 'Other';
 };
 
+const detectBaseUnitFromItemUnit = (unitRaw: string): BaseUnit => {
+  const u = String(unitRaw || '').toLowerCase().trim();
+  if (u === 'g' || u === 'kg') return 'kg';
+  if (u === 'ml' || u === 'l') return 'l';
+  // handle a few common count spellings
+  if (u === 'pcs' || u === 'pc' || u === 'piece' || u === 'pieces' || u === 'stk' || u === 'st') return 'pcs';
+  // fallback: treat as pcs (best effort)
+  return 'pcs';
+};
+
+const normalizedKey = (ingredientKey: string, baseUnit: BaseUnit) => `${ingredientKey}::${baseUnit}`;
+
+const convertQuantityToBase = (quantity: number, unitRaw: string, baseUnit: BaseUnit): number | null => {
+  if (!Number.isFinite(quantity)) return null;
+  const u = String(unitRaw || '').toLowerCase().trim();
+
+  if (baseUnit === 'kg') {
+    if (u === 'kg') return quantity;
+    if (u === 'g') return quantity / 1000;
+    return null;
+  }
+
+  if (baseUnit === 'l') {
+    if (u === 'l') return quantity;
+    if (u === 'ml') return quantity / 1000;
+    return null;
+  }
+
+  // pcs
+  if (baseUnit === 'pcs') {
+    // If someone stores "pcs" as "", we still treat it as count
+    if (u === '' || u === 'pcs' || u === 'pc' || u === 'piece' || u === 'pieces' || u === 'stk' || u === 'st') return quantity;
+    return quantity; // best effort
+  }
+
+  return null;
+};
+
 type PlannerOccurrence = {
-  key: string; // `${day}-${idx}-${recipeId}`
+  key: string;
   day: string;
   recipeId: string;
   idx: number;
@@ -168,7 +212,7 @@ type PlannerOccurrence = {
 };
 
 type ContributionRow = {
-  key: string; // occurrence key
+  key: string;
   day: string;
   title: string;
   quantity: number;
@@ -191,8 +235,56 @@ type RecipeGroup = {
   recipeId: string;
   title: string;
   rows: RecipeGroupRow[];
-  recipeCost: number | null; // null when missing prices
+  recipeCost: number | null;
   pricedCoverage: { priced: number; total: number };
+};
+
+const migratePricesV1toV2 = (rawV1: unknown): NormalizedPriceMap => {
+  // Convert legacy map (ingredientKey::unit => €/unit) into normalized (ingredientKey::baseUnit => €/baseUnit)
+  const out: NormalizedPriceMap = {};
+  if (!rawV1 || typeof rawV1 !== 'object') return out;
+
+  const v1 = rawV1 as LegacyPriceMap;
+
+  for (const entry of Object.values(v1) as LegacyPriceEntry[]) {
+    if (!entry) continue;
+    const ingredientKey = String(entry.ingredientKey || '');
+    const unit = String(entry.unit || '').toLowerCase().trim();
+    const ppu = Number(entry.pricePerUnit);
+
+    if (!ingredientKey || !Number.isFinite(ppu) || ppu < 0) continue;
+
+    let baseUnit: BaseUnit = detectBaseUnitFromItemUnit(unit);
+    let pricePerBaseUnit = ppu;
+
+    // legacy may store €/g or €/ml — normalize to €/kg or €/l
+    if (unit === 'g') {
+      baseUnit = 'kg';
+      pricePerBaseUnit = ppu * 1000;
+    } else if (unit === 'ml') {
+      baseUnit = 'l';
+      pricePerBaseUnit = ppu * 1000;
+    } else if (unit === 'kg') {
+      baseUnit = 'kg';
+      pricePerBaseUnit = ppu;
+    } else if (unit === 'l') {
+      baseUnit = 'l';
+      pricePerBaseUnit = ppu;
+    } else {
+      baseUnit = 'pcs';
+      pricePerBaseUnit = ppu;
+    }
+
+    const k = normalizedKey(ingredientKey, baseUnit);
+    out[k] = {
+      ingredientKey,
+      baseUnit,
+      pricePerBaseUnit,
+      updatedAt: Date.now(),
+    };
+  }
+
+  return out;
 };
 
 const ShoppingListView: React.FC<ShoppingListViewProps> = ({
@@ -204,18 +296,22 @@ const ShoppingListView: React.FC<ShoppingListViewProps> = ({
   onResetChecks,
   onClear,
 }) => {
+  // Presets
   const [mode, setMode] = useState<ViewMode>('totals');
   const [showOnlyUnchecked, setShowOnlyUnchecked] = useState(true);
 
+  // Totals: breakdown + grouping
   const [expandedItemIds, setExpandedItemIds] = useState<Set<string>>(new Set());
   const [autoExpandUnchecked, setAutoExpandUnchecked] = useState(false);
 
   const [groupByAisle, setGroupByAisle] = useState(true);
   const [hidePantry, setHidePantry] = useState(false);
 
+  // Costs
   const [showCosts, setShowCosts] = useState(true);
   const [excludePantryFromTotalsCost, setExcludePantryFromTotalsCost] = useState(true);
 
+  // Local overrides
   const [aisleOverrides, setAisleOverrides] = useState<Record<string, Aisle>>(() => {
     try {
       const raw = localStorage.getItem(LS_AISLE_OVERRIDES);
@@ -235,10 +331,26 @@ const ShoppingListView: React.FC<ShoppingListViewProps> = ({
     }
   });
 
-  const [prices, setPrices] = useState<PriceMap>(() => {
+  // ✅ v1.5 normalized prices with auto-migration from v1
+  const [prices, setPrices] = useState<NormalizedPriceMap>(() => {
     try {
-      const raw = localStorage.getItem(LS_PRICES);
-      return raw ? (JSON.parse(raw) as PriceMap) : {};
+      const rawV2 = localStorage.getItem(LS_PRICES_V2);
+      if (rawV2) {
+        const parsed = JSON.parse(rawV2) as NormalizedPriceMap;
+        return parsed && typeof parsed === 'object' ? parsed : {};
+      }
+
+      // if no v2 yet, try migrate v1
+      const rawV1 = localStorage.getItem(LS_PRICES_V1);
+      if (rawV1) {
+        const parsedV1 = JSON.parse(rawV1);
+        const migrated = migratePricesV1toV2(parsedV1);
+        // persist immediately
+        localStorage.setItem(LS_PRICES_V2, JSON.stringify(migrated));
+        return migrated;
+      }
+
+      return {};
     } catch {
       return {};
     }
@@ -262,7 +374,7 @@ const ShoppingListView: React.FC<ShoppingListViewProps> = ({
 
   useEffect(() => {
     try {
-      localStorage.setItem(LS_PRICES, JSON.stringify(prices));
+      localStorage.setItem(LS_PRICES_V2, JSON.stringify(prices));
     } catch {
       // ignore
     }
@@ -283,13 +395,7 @@ const ShoppingListView: React.FC<ShoppingListViewProps> = ({
       const ids = planner?.[day] || [];
       ids.forEach((recipeId, idx) => {
         const title = recipeTitleById.get(recipeId) || 'Unknown recipe';
-        out.push({
-          key: `${day}-${idx}-${recipeId}`,
-          day,
-          recipeId,
-          idx,
-          title,
-        });
+        out.push({ key: `${day}-${idx}-${recipeId}`, day, recipeId, idx, title });
       });
     });
     return out;
@@ -303,33 +409,35 @@ const ShoppingListView: React.FC<ShoppingListViewProps> = ({
 
   const isPantry = (ingredientKey: string) => pantrySet.has(ingredientKey);
 
-  const priceKey = (ingredientKey: string, unit: string) => `${ingredientKey}::${unit || ''}`;
-
-  const getPricePerUnit = (ingredientKey: string, unit: string): number | null => {
-    const entry = prices[priceKey(ingredientKey, unit)];
+  const getNormalizedPrice = (ingredientKey: string, baseUnit: BaseUnit): number | null => {
+    const entry = prices[normalizedKey(ingredientKey, baseUnit)];
     if (!entry) return null;
-    if (!Number.isFinite(entry.pricePerUnit)) return null;
-    return entry.pricePerUnit;
+    if (!Number.isFinite(entry.pricePerBaseUnit)) return null;
+    return entry.pricePerBaseUnit;
   };
 
-  const setPricePerUnit = (ingredientKey: string, unit: string, pricePerUnit: number | null) => {
-    const k = priceKey(ingredientKey, unit);
+  const setNormalizedPrice = (ingredientKey: string, baseUnit: BaseUnit, pricePerBaseUnit: number | null) => {
+    const k = normalizedKey(ingredientKey, baseUnit);
     setPrices(prev => {
       const next = { ...prev };
-      if (pricePerUnit === null || !Number.isFinite(pricePerUnit)) {
+      if (pricePerBaseUnit === null || !Number.isFinite(pricePerBaseUnit) || pricePerBaseUnit < 0) {
         delete next[k];
       } else {
-        next[k] = { ingredientKey, unit, pricePerUnit, updatedAt: Date.now() };
+        next[k] = { ingredientKey, baseUnit, pricePerBaseUnit, updatedAt: Date.now() };
       }
       return next;
     });
   };
 
-  const itemCost = (ingredientKey: string, unit: string, quantity: number): number | null => {
-    const ppu = getPricePerUnit(ingredientKey, unit);
-    if (ppu === null) return null;
-    if (!Number.isFinite(quantity)) return null;
-    return quantity * ppu;
+  const itemCost = (ingredientKey: string, unitRaw: string, quantity: number): number | null => {
+    const baseUnit = detectBaseUnitFromItemUnit(unitRaw);
+    const pricePerBase = getNormalizedPrice(ingredientKey, baseUnit);
+    if (pricePerBase === null) return null;
+
+    const qtyBase = convertQuantityToBase(quantity, unitRaw, baseUnit);
+    if (qtyBase === null) return null;
+
+    return qtyBase * pricePerBase;
   };
 
   const visibleTotals = useMemo(() => {
@@ -423,9 +531,8 @@ const ShoppingListView: React.FC<ShoppingListViewProps> = ({
         let allPriced = true;
 
         for (const r of rows) {
-          if (r.cost === null) {
-            allPriced = false;
-          } else {
+          if (r.cost === null) allPriced = false;
+          else {
             priced += 1;
             sum += r.cost;
           }
@@ -520,7 +627,7 @@ const ShoppingListView: React.FC<ShoppingListViewProps> = ({
         </head>
         <body>
           <h1>TokToTable — Shopping List</h1>
-          <div className="meta">Mode: ${mode === 'totals' ? 'Shopping (Totals)' : 'Cooking (By recipe)'} • Generated: ${new Date(
+          <div class="meta">Mode: ${mode === 'totals' ? 'Shopping (Totals)' : 'Cooking (By recipe)'} • Generated: ${new Date(
       shoppingList?.updatedAt ?? Date.now()
     ).toLocaleString()}</div>
           <pre>${text.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre>
@@ -533,26 +640,43 @@ const ShoppingListView: React.FC<ShoppingListViewProps> = ({
     win.document.close();
   };
 
+  // Totals CSV export (includes normalized prices)
   const handleExportShoppingCsv = () => {
     const rows = visibleTotals.map(i => {
       const aisle = getAisleForItem(i.ingredientKey, i.label);
       const pantry = isPantry(i.ingredientKey) ? '1' : '0';
-      const cost = showCosts ? itemCost(i.ingredientKey, String(i.unit || ''), i.quantity) : null;
+      const unit = String(i.unit || '');
+      const baseUnit = detectBaseUnitFromItemUnit(unit);
+      const pricePerBaseUnit = getNormalizedPrice(i.ingredientKey, baseUnit);
+      const cost = showCosts ? itemCost(i.ingredientKey, unit, i.quantity) : null;
 
       return {
         checked: i.checked ? '1' : '0',
         label: i.label,
         quantity: String(i.quantity ?? ''),
-        unit: String(i.unit ?? ''),
+        unit: unit,
         aisle,
         pantry,
         ingredientKey: i.ingredientKey,
-        pricePerUnit: String(getPricePerUnit(i.ingredientKey, String(i.unit || '')) ?? ''),
+        baseUnit,
+        pricePerBaseUnit: String(pricePerBaseUnit ?? ''),
         itemCost: String(cost ?? ''),
       };
     });
 
-    const header = ['checked', 'label', 'quantity', 'unit', 'aisle', 'pantry', 'ingredientKey', 'pricePerUnit', 'itemCost'];
+    const header = [
+      'checked',
+      'label',
+      'quantity',
+      'unit',
+      'aisle',
+      'pantry',
+      'ingredientKey',
+      'baseUnit',
+      'pricePerBaseUnit',
+      'itemCost',
+    ];
+
     const csv =
       header.join(',') +
       '\n' +
@@ -562,20 +686,18 @@ const ShoppingListView: React.FC<ShoppingListViewProps> = ({
     downloadTextFile(`toktotable-shopping-${stamp}.csv`, csv, 'text/csv');
   };
 
-  // ✅ FIXED: Object.values(prices) typed as PriceEntry[]
+  // Price CSV export/import (v1.5): ingredientKey,baseUnit,pricePerBaseUnit
   const handleExportPriceCsv = () => {
-    const entries = (Object.values(prices) as PriceEntry[]).sort((a, b) =>
-      (a.ingredientKey + '::' + a.unit).localeCompare(b.ingredientKey + '::' + b.unit)
+    const entries = (Object.values(prices) as NormalizedPriceEntry[]).sort((a, b) =>
+      (a.ingredientKey + '::' + a.baseUnit).localeCompare(b.ingredientKey + '::' + b.baseUnit)
     );
 
-    const header = ['ingredientKey', 'unit', 'pricePerUnit', 'updatedAt'];
+    const header = ['ingredientKey', 'baseUnit', 'pricePerBaseUnit', 'updatedAt'];
     const csv =
       header.join(',') +
       '\n' +
       entries
-        .map((e: PriceEntry) =>
-          [e.ingredientKey, e.unit, String(e.pricePerUnit), String(e.updatedAt)].map(escapeCsv).join(',')
-        )
+        .map(e => [e.ingredientKey, e.baseUnit, String(e.pricePerBaseUnit), String(e.updatedAt)].map(escapeCsv).join(','))
         .join('\n');
 
     const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
@@ -592,16 +714,19 @@ const ShoppingListView: React.FC<ShoppingListViewProps> = ({
 
     const header = lines[0].split(',').map(h => h.trim());
     const idxKey = header.indexOf('ingredientKey');
-    const idxUnit = header.indexOf('unit');
-    const idxPrice = header.indexOf('pricePerUnit');
 
-    if (idxKey === -1 || idxUnit === -1 || idxPrice === -1) {
-      alert('CSV must have columns: ingredientKey, unit, pricePerUnit');
+    // v1.5 columns
+    const idxBaseUnit = header.indexOf('baseUnit');
+    const idxPriceBase = header.indexOf('pricePerBaseUnit');
+
+    // legacy columns (v1.4)
+    const idxUnitLegacy = header.indexOf('unit');
+    const idxPriceLegacy = header.indexOf('pricePerUnit');
+
+    if (idxKey === -1) {
+      alert('CSV must have column: ingredientKey');
       return;
     }
-
-    const parsed: PriceMap = {};
-    let added = 0;
 
     const parseRow = (line: string) => {
       const out: string[] = [];
@@ -628,24 +753,64 @@ const ShoppingListView: React.FC<ShoppingListViewProps> = ({
       return out.map(s => s.trim());
     };
 
+    const parsed: NormalizedPriceMap = {};
+    let added = 0;
+
     for (let i = 1; i < lines.length; i++) {
       const cols = parseRow(lines[i]);
-      const ingredientKey = cols[idxKey] || '';
-      const unit = cols[idxUnit] || '';
-      const priceStr = cols[idxPrice] || '';
+      const ingredientKey = (cols[idxKey] || '').trim();
+      if (!ingredientKey) continue;
 
-      if (!ingredientKey || !unit) continue;
+      // Prefer v1.5 schema if present
+      if (idxBaseUnit !== -1 && idxPriceBase !== -1) {
+        const baseUnitRaw = (cols[idxBaseUnit] || '').trim().toLowerCase();
+        const baseUnit: BaseUnit = baseUnitRaw === 'kg' || baseUnitRaw === 'l' || baseUnitRaw === 'pcs' ? (baseUnitRaw as BaseUnit) : 'pcs';
+        const priceStr = cols[idxPriceBase] || '';
+        const price = Number(String(priceStr).replace(',', '.'));
+        if (!Number.isFinite(price) || price < 0) continue;
 
-      const price = Number(String(priceStr).replace(',', '.'));
-      if (!Number.isFinite(price) || price < 0) continue;
+        const k = normalizedKey(ingredientKey, baseUnit);
+        parsed[k] = { ingredientKey, baseUnit, pricePerBaseUnit: price, updatedAt: Date.now() };
+        added += 1;
+        continue;
+      }
 
-      const k = priceKey(ingredientKey, unit);
-      parsed[k] = { ingredientKey, unit, pricePerUnit: price, updatedAt: Date.now() };
-      added += 1;
+      // Fallback legacy schema (unit,pricePerUnit)
+      if (idxUnitLegacy !== -1 && idxPriceLegacy !== -1) {
+        const unit = (cols[idxUnitLegacy] || '').trim().toLowerCase();
+        const priceStr = cols[idxPriceLegacy] || '';
+        const ppu = Number(String(priceStr).replace(',', '.'));
+        if (!Number.isFinite(ppu) || ppu < 0) continue;
+
+        let baseUnit: BaseUnit = detectBaseUnitFromItemUnit(unit);
+        let pricePerBaseUnit = ppu;
+
+        if (unit === 'g') {
+          baseUnit = 'kg';
+          pricePerBaseUnit = ppu * 1000;
+        } else if (unit === 'ml') {
+          baseUnit = 'l';
+          pricePerBaseUnit = ppu * 1000;
+        } else if (unit === 'kg') {
+          baseUnit = 'kg';
+          pricePerBaseUnit = ppu;
+        } else if (unit === 'l') {
+          baseUnit = 'l';
+          pricePerBaseUnit = ppu;
+        } else {
+          baseUnit = 'pcs';
+          pricePerBaseUnit = ppu;
+        }
+
+        const k = normalizedKey(ingredientKey, baseUnit);
+        parsed[k] = { ingredientKey, baseUnit, pricePerBaseUnit, updatedAt: Date.now() };
+        added += 1;
+        continue;
+      }
     }
 
     if (added === 0) {
-      alert('No valid price rows found.');
+      alert('No valid price rows found. Use columns: ingredientKey,baseUnit,pricePerBaseUnit (or legacy unit,pricePerUnit).');
       return;
     }
 
@@ -720,14 +885,7 @@ const ShoppingListView: React.FC<ShoppingListViewProps> = ({
 
       const cost = itemCost(item.ingredientKey, unit, qty);
 
-      rows.push({
-        key: occ.key,
-        day: occ.day,
-        title: occ.title,
-        quantity: qty,
-        unit,
-        cost,
-      });
+      rows.push({ key: occ.key, day: occ.day, title: occ.title, quantity: qty, unit, cost });
     }
     return rows;
   };
@@ -788,12 +946,13 @@ const ShoppingListView: React.FC<ShoppingListViewProps> = ({
         </h2>
         <p className="text-slate-400">
           {mode === 'totals'
-            ? 'Shopping mode: totals (deduplicated). Aisles + pantry + prices.'
+            ? 'Shopping mode: totals (deduplicated). Aisles + pantry + normalized prices.'
             : 'Cooking mode: grouped by recipe in planner order + recipe costs.'}
         </p>
       </div>
 
       <div className="glass-panel p-6 rounded-3xl border-white/5 bg-slate-900/40">
+        {/* Header */}
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-white/10 pb-5 mb-6">
           <div>
             <p className="text-xs text-slate-500 font-bold uppercase tracking-widest">Status</p>
@@ -878,7 +1037,7 @@ const ShoppingListView: React.FC<ShoppingListViewProps> = ({
               onClick={handleExportShoppingCsv}
               className="px-5 py-2.5 rounded-2xl font-bold bg-white/10 hover:bg-white/15 text-slate-200 transition-all flex items-center gap-2"
               disabled={visibleTotals.length === 0}
-              title="Export totals as CSV (includes prices if set)"
+              title="Export totals as CSV (includes normalized prices if set)"
             >
               <i className="fa-solid fa-file-csv"></i>
               CSV
@@ -896,7 +1055,7 @@ const ShoppingListView: React.FC<ShoppingListViewProps> = ({
 
             <label
               className="px-5 py-2.5 rounded-2xl font-bold bg-white/10 hover:bg-white/15 text-slate-200 transition-all flex items-center gap-2 cursor-pointer"
-              title="Import price book CSV (ingredientKey,unit,pricePerUnit)"
+              title="Import price book CSV (ingredientKey,baseUnit,pricePerBaseUnit)"
             >
               <i className="fa-solid fa-file-import"></i>
               Import Prices
@@ -1104,10 +1263,9 @@ const ShoppingListView: React.FC<ShoppingListViewProps> = ({
                         const pantry = isPantry(item.ingredientKey);
 
                         const unit = String(item.unit || '');
-                        const ppu = getPricePerUnit(item.ingredientKey, unit);
+                        const baseUnit = detectBaseUnitFromItemUnit(unit);
+                        const pricePerBase = getNormalizedPrice(item.ingredientKey, baseUnit);
                         const c = showCosts ? itemCost(item.ingredientKey, unit, item.quantity) : null;
-
-                        const prettyPpu = ppu === null ? null : prettyPriceUnit(unit, ppu);
 
                         const contributions = expanded && hasParts ? getContributionsForItem(item.id) : [];
 
@@ -1222,29 +1380,23 @@ const ShoppingListView: React.FC<ShoppingListViewProps> = ({
                                       inputMode="decimal"
                                       step="0.01"
                                       min="0"
-                                      placeholder="€ / unit"
-                                      value={ppu === null ? '' : String(ppu)}
+                                      placeholder={`€ / ${baseUnit}`}
+                                      value={pricePerBase === null ? '' : String(pricePerBase)}
                                       onChange={e => {
                                         const v = e.target.value;
                                         if (v.trim() === '') {
-                                          setPricePerUnit(item.ingredientKey, unit, null);
+                                          setNormalizedPrice(item.ingredientKey, baseUnit, null);
                                           return;
                                         }
                                         const n = Number(v);
                                         if (!Number.isFinite(n) || n < 0) return;
-                                        setPricePerUnit(item.ingredientKey, unit, n);
+                                        setNormalizedPrice(item.ingredientKey, baseUnit, n);
                                       }}
                                       className="bg-transparent text-slate-200 text-xs font-bold px-2 py-1 outline-none w-28"
-                                      title={`Price per ${unit || 'unit'} (stored locally)`}
+                                      title={`Price per ${baseUnit} (stored locally, normalized)`}
                                     />
 
-                                    <span className="text-xs text-slate-500 font-bold mr-2">{unit ? `€/${unit}` : ''}</span>
-
-                                    {prettyPpu && (
-                                      <span className="text-xs text-slate-400 font-bold mr-2">
-                                        {prettyPpu.unitLabel}: {formatMoney(prettyPpu.price)}
-                                      </span>
-                                    )}
+                                    <span className="text-xs text-slate-500 font-bold mr-2">{`€/${baseUnit}`}</span>
                                   </div>
                                 )}
                               </div>
