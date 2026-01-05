@@ -1,137 +1,64 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import { Recipe, PlannerData } from './types';
+import React, { useState } from 'react';
+import { Recipe } from './types';
 import Navbar from './components/Navbar';
 import UrlInput from './components/UrlInput';
 import RecipeCard from './components/RecipeCard';
 import RecipeEditor from './components/RecipeEditor';
 import Settings from './components/Settings';
 import ProcessingVisualizer from './components/ProcessingVisualizer';
-import { extractRecipeFromUrl } from './services/geminiService';
-import { loadRecipes, saveRecipes, loadPlanner, savePlanner, clearAllStorage } from './services/storage';
+
+import { useRecipes } from './hooks/useRecipes';
+import { usePlanner } from './hooks/usePlanner';
 
 const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 
 const App: React.FC = () => {
   const [currentView, setCurrentView] = useState<'dashboard' | 'planner' | 'settings'>('dashboard');
 
-  const [recipes, setRecipes] = useState<Recipe[]>(loadRecipes);
+  const {
+    recipes,
+    processingState,
+    selectedRecipe,
+    setSelectedRecipe,
+    filter,
+    setFilter,
+    sortBy,
+    setSortBy,
+    filteredAndSortedRecipes,
+    extractFromUrl,
+    saveRecipe,
+    deleteRecipe,
+    clearAll,
+    dismissError,
+  } = useRecipes();
 
-  const [planner, setPlanner] = useState<PlannerData>(loadPlanner);
-
-  const [processingState, setProcessingState] = useState<'idle' | 'fetching' | 'analyzing' | 'synthesizing' | 'error'>('idle');
-  const [selectedRecipe, setSelectedRecipe] = useState<Recipe | null>(null);
-  const [showPickerForDay, setShowPickerForDay] = useState<string | null>(null);
-
-  const [filter, setFilter] = useState<'all' | 'extracted' | 'validated'>('all');
-  const [sortBy, setSortBy] = useState<'date' | 'title' | 'status'>('date');
-
-  useEffect(() => {
-    saveRecipes(recipes);
-  }, [recipes]);
-
-  useEffect(() => {
-    savePlanner(planner);
-  }, [planner]);
-
-  const filteredAndSortedRecipes = useMemo(() => {
-    return recipes
-      .filter(r => filter === 'all' || r.status === filter)
-      .sort((a, b) => {
-        if (sortBy === 'title') return a.title.localeCompare(b.title);
-        if (sortBy === 'status') return a.status.localeCompare(b.status);
-        return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
-      });
-  }, [recipes, filter, sortBy]);
-
-  const handleExtract = async (url: string) => {
-    if (!url.includes('tiktok.com')) {
-      alert("Please enter a valid TikTok URL");
-      return;
-    }
-
-    setProcessingState('fetching');
-
-    try {
-      const result = await extractRecipeFromUrl(url);
-
-      if (result && result.title) {
-        setProcessingState('synthesizing');
-
-        const newRecipe: Recipe = {
-          id: `recipe-${Date.now()}`,
-          title: result.title,
-          source_url: url,
-          creator: result.creator || "@tiktok_chef",
-          thumbnail_url: result.thumbnail_url,
-          ingredients: result.ingredients || [],
-          steps: (result.steps || []).map((s: any, i: number) => ({
-            ...s,
-            step_number: s.step_number || i + 1,
-            timestamp_start: s.timestamp_start || 0,
-            timestamp_end: s.timestamp_end || 0
-          })),
-          sources: result.sources || [],
-          status: 'extracted',
-          created_at: new Date().toISOString()
-        };
-
-        setRecipes(prev => [newRecipe, ...prev]);
-        setProcessingState('idle');
-        setSelectedRecipe(newRecipe);
-      } else {
-        setProcessingState('error');
-      }
-    } catch (error) {
-      console.error("Extraction error:", error);
-      setProcessingState('error');
-    }
-  };
-
-  const handleSaveRecipe = (updated: Recipe) => {
-    setRecipes(prev => prev.map(r => (r.id === updated.id ? updated : r)));
-    setSelectedRecipe(null);
-  };
+  const {
+    planner,
+    showPickerForDay,
+    setShowPickerForDay,
+    addToPlanner,
+    removeFromPlanner,
+    removeRecipeEverywhere,
+    clearPlanner,
+  } = usePlanner();
 
   const handleDeleteRecipe = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (confirm("Wil je dit recept definitief verwijderen uit je kluis?")) {
-      setRecipes(prev => prev.filter(r => r.id !== id));
-      setPlanner(prev => {
-        const newPlanner = { ...prev };
-        Object.keys(newPlanner).forEach(day => {
-          newPlanner[day] = newPlanner[day]?.filter(rid => rid !== id) || [];
-        });
-        return newPlanner;
-      });
+    if (confirm('Wil je dit recept definitief verwijderen uit je kluis?')) {
+      deleteRecipe(id);
+      removeRecipeEverywhere(id);
     }
   };
 
-  const addToPlanner = (day: string, recipeId: string) => {
-    setPlanner(prev => ({
-      ...prev,
-      [day]: [...(prev[day] || []), recipeId]
-    }));
-    setShowPickerForDay(null);
-  };
-
-  const removeFromPlanner = (day: string, recipeId: string) => {
-    setPlanner(prev => ({
-      ...prev,
-      [day]: (prev[day] || []).filter(id => id !== recipeId)
-    }));
-  };
-
   const handleClearRecipes = () => {
-    clearAllStorage();
-    setRecipes([]);
-    setPlanner({});
-    alert("Recipe Vault cleared.");
+    clearAll();        // wist storage keys + recipes
+    clearPlanner();    // planner ook leeg
+    alert('Recipe Vault cleared.');
   };
 
   const handleClearPlanner = () => {
-    setPlanner({});
-    savePlanner({});
-    alert("Meal Planner cleared.");
+    clearPlanner();
+    alert('Meal Planner cleared.');
   };
 
   return (
@@ -146,11 +73,16 @@ const App: React.FC = () => {
                 From Scroll to <span className="tiktok-gradient bg-clip-text text-transparent">Table.</span>
               </h2>
               <p className="text-slate-400 max-w-xl mx-auto text-lg">
-                Paste a link from your favorite food creator like <span className="text-pink-400 font-bold">@itshelenmelon</span> to instantly extract ingredients and steps.
+                Paste a link from your favorite food creator like{' '}
+                <span className="text-pink-400 font-bold">@itshelenmelon</span> to instantly extract ingredients and
+                steps.
               </p>
             </div>
 
-            <UrlInput onExtract={handleExtract} isLoading={processingState !== 'idle' && processingState !== 'error'} />
+            <UrlInput
+              onExtract={extractFromUrl}
+              isLoading={processingState !== 'idle' && processingState !== 'error'}
+            />
 
             {['fetching', 'analyzing', 'synthesizing'].includes(processingState) ? (
               <div className="py-12">
@@ -173,7 +105,9 @@ const App: React.FC = () => {
                         <button
                           key={f}
                           onClick={() => setFilter(f)}
-                          className={`px-3 py-1 rounded-md text-[10px] font-bold uppercase transition-all ${filter === f ? 'bg-pink-500 text-white' : 'text-slate-400 hover:text-white'}`}
+                          className={`px-3 py-1 rounded-md text-[10px] font-bold uppercase transition-all ${
+                            filter === f ? 'bg-pink-500 text-white' : 'text-slate-400 hover:text-white'
+                          }`}
                         >
                           {f}
                         </button>
@@ -186,7 +120,9 @@ const App: React.FC = () => {
                         <button
                           key={s}
                           onClick={() => setSortBy(s)}
-                          className={`px-3 py-1 rounded-md text-[10px] font-bold uppercase transition-all ${sortBy === s ? 'bg-cyan-500 text-white' : 'text-slate-400 hover:text-white'}`}
+                          className={`px-3 py-1 rounded-md text-[10px] font-bold uppercase transition-all ${
+                            sortBy === s ? 'bg-cyan-500 text-white' : 'text-slate-400 hover:text-white'
+                          }`}
                         >
                           {s}
                         </button>
@@ -199,7 +135,9 @@ const App: React.FC = () => {
                   <div className="text-center py-20 glass-panel rounded-3xl border-dashed border-2 border-white/5">
                     <i className="fa-solid fa-utensils text-4xl text-slate-700 mb-4"></i>
                     <p className="text-slate-500">
-                      {recipes.length === 0 ? "Your vault is empty. Paste a link to start." : "No recipes match your filter."}
+                      {recipes.length === 0
+                        ? 'Your vault is empty. Paste a link to start.'
+                        : 'No recipes match your filter.'}
                     </p>
                   </div>
                 ) : (
@@ -222,22 +160,36 @@ const App: React.FC = () => {
         {currentView === 'planner' && (
           <section className="animate-fadeIn">
             <div className="text-center mb-12">
-              <h2 className="text-4xl font-black mb-2">Weekly <span className="text-cyan-400">Meal Planner</span></h2>
+              <h2 className="text-4xl font-black mb-2">
+                Weekly <span className="text-cyan-400">Meal Planner</span>
+              </h2>
               <p className="text-slate-400">Plan your extracted recipes into your weekly schedule.</p>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-7 gap-4">
               {DAYS.map(day => (
-                <div key={day} className="glass-panel p-4 rounded-2xl min-h-[350px] flex flex-col border-white/5 bg-slate-900/40">
-                  <h4 className="font-bold text-slate-400 mb-4 pb-2 border-b border-white/10 text-center uppercase text-[10px] tracking-widest">{day}</h4>
+                <div
+                  key={day}
+                  className="glass-panel p-4 rounded-2xl min-h-[350px] flex flex-col border-white/5 bg-slate-900/40"
+                >
+                  <h4 className="font-bold text-slate-400 mb-4 pb-2 border-b border-white/10 text-center uppercase text-[10px] tracking-widest">
+                    {day}
+                  </h4>
 
                   <div className="flex-1 space-y-3">
                     {(planner[day] || []).map(rid => {
                       const recipe = recipes.find(r => r.id === rid);
                       if (!recipe) return null;
                       return (
-                        <div key={rid} className="group relative bg-slate-800/50 p-3 rounded-xl border border-white/10 hover:border-pink-500/30 transition-all">
-                          <img src={recipe.thumbnail_url} className="w-full h-20 object-cover rounded-lg mb-2 opacity-80" alt="" />
+                        <div
+                          key={rid}
+                          className="group relative bg-slate-800/50 p-3 rounded-xl border border-white/10 hover:border-pink-500/30 transition-all"
+                        >
+                          <img
+                            src={recipe.thumbnail_url}
+                            className="w-full h-20 object-cover rounded-lg mb-2 opacity-80"
+                            alt=""
+                          />
                           <p className="text-[11px] font-bold line-clamp-2 pr-4">{recipe.title}</p>
                           <button
                             onClick={() => removeFromPlanner(day, rid)}
@@ -264,10 +216,7 @@ const App: React.FC = () => {
         )}
 
         {currentView === 'settings' && (
-          <Settings
-            onClearRecipes={handleClearRecipes}
-            onClearPlanner={handleClearPlanner}
-          />
+          <Settings onClearRecipes={handleClearRecipes} onClearPlanner={handleClearPlanner} />
         )}
       </main>
 
@@ -284,13 +233,17 @@ const App: React.FC = () => {
               {recipes.length === 0 ? (
                 <p className="text-center text-slate-500 py-12">No recipes in your vault yet.</p>
               ) : (
-                recipes.map(r => (
+                recipes.map((r: Recipe) => (
                   <button
                     key={r.id}
                     onClick={() => addToPlanner(showPickerForDay, r.id)}
                     className="w-full text-left p-3 rounded-xl hover:bg-white/5 border border-transparent hover:border-white/10 transition-all flex gap-4 items-center group"
                   >
-                    <img src={r.thumbnail_url} className="w-14 h-14 rounded-lg object-cover group-hover:scale-105 transition-transform" alt="" />
+                    <img
+                      src={r.thumbnail_url}
+                      className="w-14 h-14 rounded-lg object-cover group-hover:scale-105 transition-transform"
+                      alt=""
+                    />
                     <div className="flex-1 overflow-hidden">
                       <p className="font-bold text-sm truncate">{r.title}</p>
                       <p className="text-[10px] text-slate-500 uppercase tracking-tighter">{r.creator}</p>
@@ -305,11 +258,7 @@ const App: React.FC = () => {
       )}
 
       {selectedRecipe && (
-        <RecipeEditor
-          recipe={selectedRecipe}
-          onSave={handleSaveRecipe}
-          onClose={() => setSelectedRecipe(null)}
-        />
+        <RecipeEditor recipe={selectedRecipe} onSave={saveRecipe} onClose={() => setSelectedRecipe(null)} />
       )}
 
       {processingState === 'error' && (
@@ -319,7 +268,10 @@ const App: React.FC = () => {
             <p className="font-bold">Extraction Failed</p>
             <p className="text-xs opacity-90">Could not find recipe data for this video. Try another link.</p>
           </div>
-          <button onClick={() => setProcessingState('idle')} className="bg-white/20 hover:bg-white/30 px-4 py-1 rounded-lg font-bold text-xs transition-all">
+          <button
+            onClick={dismissError}
+            className="bg-white/20 hover:bg-white/30 px-4 py-1 rounded-lg font-bold text-xs transition-all"
+          >
             Dismiss
           </button>
         </div>
