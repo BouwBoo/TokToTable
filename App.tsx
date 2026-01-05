@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Recipe } from './types';
+
 import Navbar from './components/Navbar';
 import UrlInput from './components/UrlInput';
 import RecipeCard from './components/RecipeCard';
@@ -7,13 +8,19 @@ import RecipeEditor from './components/RecipeEditor';
 import Settings from './components/Settings';
 import ProcessingVisualizer from './components/ProcessingVisualizer';
 
+// Shopping List (NEW)
+import ShoppingListView from './components/ShoppingListView';
+import { useShoppingList } from './hooks/useShoppingList';
+
 import { useRecipes } from './hooks/useRecipes';
 import { usePlanner } from './hooks/usePlanner';
 
-const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'] as const;
+
+type View = 'dashboard' | 'planner' | 'shopping' | 'settings';
 
 const App: React.FC = () => {
-  const [currentView, setCurrentView] = useState<'dashboard' | 'planner' | 'settings'>('dashboard');
+  const [currentView, setCurrentView] = useState<View>('dashboard');
 
   const {
     recipes,
@@ -42,6 +49,8 @@ const App: React.FC = () => {
     clearPlanner,
   } = usePlanner();
 
+  const { shoppingList, generateFromPlanner, toggle, reset, clear } = useShoppingList();
+
   const handleDeleteRecipe = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
     if (confirm('Wil je dit recept definitief verwijderen uit je kluis?')) {
@@ -51,14 +60,20 @@ const App: React.FC = () => {
   };
 
   const handleClearRecipes = () => {
-    clearAll();        // wist storage keys + recipes
-    clearPlanner();    // planner ook leeg
+    clearAll(); // wist recipes storage
+    clearPlanner(); // planner ook leeg
+    clear(); // shopping list ook leeg
     alert('Recipe Vault cleared.');
   };
 
   const handleClearPlanner = () => {
     clearPlanner();
     alert('Meal Planner cleared.');
+  };
+
+  const handleGenerateShopping = () => {
+    generateFromPlanner(planner, recipes);
+    setCurrentView('shopping');
   };
 
   return (
@@ -73,16 +88,11 @@ const App: React.FC = () => {
                 From Scroll to <span className="tiktok-gradient bg-clip-text text-transparent">Table.</span>
               </h2>
               <p className="text-slate-400 max-w-xl mx-auto text-lg">
-                Paste a link from your favorite food creator like{' '}
-                <span className="text-pink-400 font-bold">@itshelenmelon</span> to instantly extract ingredients and
-                steps.
+                Paste a link from your favorite food creator to instantly extract ingredients and steps.
               </p>
             </div>
 
-            <UrlInput
-              onExtract={extractFromUrl}
-              isLoading={processingState !== 'idle' && processingState !== 'error'}
-            />
+            <UrlInput onExtract={extractFromUrl} isLoading={processingState !== 'idle' && processingState !== 'error'} />
 
             {['fetching', 'analyzing', 'synthesizing'].includes(processingState) ? (
               <div className="py-12">
@@ -135,20 +145,13 @@ const App: React.FC = () => {
                   <div className="text-center py-20 glass-panel rounded-3xl border-dashed border-2 border-white/5">
                     <i className="fa-solid fa-utensils text-4xl text-slate-700 mb-4"></i>
                     <p className="text-slate-500">
-                      {recipes.length === 0
-                        ? 'Your vault is empty. Paste a link to start.'
-                        : 'No recipes match your filter.'}
+                      {recipes.length === 0 ? 'Your vault is empty. Paste a link to start.' : 'No recipes match your filter.'}
                     </p>
                   </div>
                 ) : (
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-8">
                     {filteredAndSortedRecipes.map(recipe => (
-                      <RecipeCard
-                        key={recipe.id}
-                        recipe={recipe}
-                        onClick={setSelectedRecipe}
-                        onDelete={handleDeleteRecipe}
-                      />
+                      <RecipeCard key={recipe.id} recipe={recipe} onClick={setSelectedRecipe} onDelete={handleDeleteRecipe} />
                     ))}
                   </div>
                 )}
@@ -164,6 +167,16 @@ const App: React.FC = () => {
                 Weekly <span className="text-cyan-400">Meal Planner</span>
               </h2>
               <p className="text-slate-400">Plan your extracted recipes into your weekly schedule.</p>
+            </div>
+
+            <div className="flex justify-center mb-10">
+              <button
+                onClick={handleGenerateShopping}
+                className="px-6 py-3 rounded-2xl font-black bg-pink-500 hover:bg-pink-400 text-white transition-all shadow-xl shadow-pink-900/20 flex items-center gap-3"
+              >
+                <i className="fa-solid fa-basket-shopping"></i>
+                Generate Shopping List
+              </button>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-7 gap-4">
@@ -185,11 +198,7 @@ const App: React.FC = () => {
                           key={rid}
                           className="group relative bg-slate-800/50 p-3 rounded-xl border border-white/10 hover:border-pink-500/30 transition-all"
                         >
-                          <img
-                            src={recipe.thumbnail_url}
-                            className="w-full h-20 object-cover rounded-lg mb-2 opacity-80"
-                            alt=""
-                          />
+                          <img src={recipe.thumbnail_url} className="w-full h-20 object-cover rounded-lg mb-2 opacity-80" alt="" />
                           <p className="text-[11px] font-bold line-clamp-2 pr-4">{recipe.title}</p>
                           <button
                             onClick={() => removeFromPlanner(day, rid)}
@@ -215,9 +224,19 @@ const App: React.FC = () => {
           </section>
         )}
 
-        {currentView === 'settings' && (
-          <Settings onClearRecipes={handleClearRecipes} onClearPlanner={handleClearPlanner} />
+        {currentView === 'shopping' && (
+          <ShoppingListView
+            shoppingList={shoppingList}
+            planner={planner}
+            recipes={recipes}
+            onGenerate={handleGenerateShopping}
+            onToggleItem={toggle}
+            onResetChecks={reset}
+            onClear={clear}
+          />
         )}
+
+        {currentView === 'settings' && <Settings onClearRecipes={handleClearRecipes} onClearPlanner={handleClearPlanner} />}
       </main>
 
       {showPickerForDay && (
@@ -229,6 +248,7 @@ const App: React.FC = () => {
                 <i className="fa-solid fa-xmark text-xl"></i>
               </button>
             </div>
+
             <div className="flex-1 overflow-y-auto p-4 space-y-2 bg-slate-950">
               {recipes.length === 0 ? (
                 <p className="text-center text-slate-500 py-12">No recipes in your vault yet.</p>
@@ -257,9 +277,7 @@ const App: React.FC = () => {
         </div>
       )}
 
-      {selectedRecipe && (
-        <RecipeEditor recipe={selectedRecipe} onSave={saveRecipe} onClose={() => setSelectedRecipe(null)} />
-      )}
+      {selectedRecipe && <RecipeEditor recipe={selectedRecipe} onSave={saveRecipe} onClose={() => setSelectedRecipe(null)} />}
 
       {processingState === 'error' && (
         <div className="fixed bottom-10 left-1/2 -translate-x-1/2 bg-red-500 text-white px-8 py-4 rounded-2xl shadow-2xl flex items-center gap-4 animate-bounce z-[200]">

@@ -1,9 +1,10 @@
 // src/services/storage.ts
-import { Recipe, PlannerData } from '../types';
+import { PlannerData, Recipe, ShoppingList } from '../types';
 import { MOCK_RECIPES } from '../constants';
 
 const RECIPES_KEY = 'tokchef_recipes';
 const PLANNER_KEY = 'tokchef_planner';
+const SHOPPING_KEY = 'tokchef_shopping_list';
 
 export function loadRecipes(): Recipe[] {
   try {
@@ -40,7 +41,25 @@ export function savePlanner(planner: PlannerData): void {
   localStorage.setItem(PLANNER_KEY, JSON.stringify(planner));
 }
 
+export function loadShoppingList(): ShoppingList | null {
+  try {
+    const saved = localStorage.getItem(SHOPPING_KEY);
+    return saved ? JSON.parse(saved) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function saveShoppingList(list: ShoppingList): void {
+  localStorage.setItem(SHOPPING_KEY, JSON.stringify(list));
+}
+
+export function clearShoppingList(): void {
+  localStorage.removeItem(SHOPPING_KEY);
+}
+
 export function clearAllStorage(): void {
   localStorage.removeItem(RECIPES_KEY);
   localStorage.removeItem(PLANNER_KEY);
+  localStorage.removeItem(SHOPPING_KEY);
 }
