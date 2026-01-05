@@ -1,0 +1,8 @@
+{
+  "name": "TokToTable - TikTok Food Menu App",
+  "description": "A sophisticated AI-powered platform that transforms TikTok food videos into structured, cookable recipes using multimodal analysis and a human-in-the-loop validation interface.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
