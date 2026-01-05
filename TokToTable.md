@@ -1,172 +1,104 @@
-# TokToTable -- Product & Build Plan
+# TokToTable — Project Context (SYNC v1)
 
-This document is the **single source of truth** for TokToTable. It
-captures the vision, decisions, and concrete next steps so work can
-continue across chats and sessions without losing context.
+## Status
+Local development is stable.
 
-------------------------------------------------------------------------
+Frontend (Vite + React + TypeScript) and a local backend are running correctly.
+AI functionality is intentionally mocked to unblock product and UX development.
 
-## 1. Vision
+Local and GitHub repositories are in sync.
 
-**TokToTable turns TikTok cooking videos into cookable reality.**
+---
 
-Not an "AI recipe app", but a **practical cooking tool**: - from
-inspiration → recipe - from recipe → menu - from menu → shopping list -
-from shopping list → dinner
+## Current Architecture
 
-**Primary audience (Phase 1): Consumers** People who already cook using
-TikTok videos and want structure, clarity, and less friction.
+### Frontend
+- Vite + React + TypeScript
+- Uses `/api/*` endpoints only
+- No API keys in the browser
+- State persisted via localStorage
 
-Creators and professional use cases follow naturally once the consumer
-product is strong.
+### Backend (local dev)
+- `server.cjs` (pure Node HTTP server, no dependencies)
+- Endpoints:
+  - `POST /api/extract` → mock recipe extraction
+  - `POST /api/image` → mock image generation (SVG placeholder with timestamp)
 
-------------------------------------------------------------------------
+### Project Mode
+- ESM project (`"type": "module"`)
+- CommonJS used explicitly via `.cjs` where needed
 
-## 2. Core Principles
+---
 
--   Consumer-first
--   Local-first, cloud optional
--   No AI keys in the frontend
--   AI assists, humans decide
--   Structure \> automation
--   Simple UX over feature bloat
+## Key Files
 
-------------------------------------------------------------------------
+- `server.cjs` — local API server
+- `api/extract.cjs` — mock TikTok → recipe extraction
+- `api/image.cjs` — mock image generation (visual regen proof)
+- `services/geminiService.ts` — frontend → backend bridge
+- `services/aiClient.ts` — image generation facade
+- `services/storage.ts` — centralized localStorage access
+- `vite.config.ts` — Vite dev server + `/api` proxy
 
-## 3. Current State (Baseline)
+---
 
-### What exists
+## Known Limitations (Intentional)
 
--   Vite + React + TypeScript frontend
--   Recipe extraction from TikTok URLs
--   Powerful recipe editor (ingredients, steps, units, comments)
--   Weekly planner
--   LocalStorage persistence
--   Clean architecture:
-    -   components = UI
-    -   services = side effects
-    -   hooks = state & behavior
+- TikTok extraction is mocked (no real video parsing yet)
+- Image regeneration uses mock SVGs (no real AI images)
+- No authentication
+- No database (localStorage only)
+- No creator publishing flow yet
 
-### Recent refactors completed
+These are deliberate to avoid blocking on AI or infra.
 
--   D1: Centralized storage
--   D2: Moved AI infra out of components
--   D3: Extracted recipes & planner logic into hooks
+---
 
-------------------------------------------------------------------------
+## Immediate Next Product Goals
 
-## 4. Product Flow (Consumer)
+1. Shopping List
+   - Aggregate ingredients across Planner
+   - Normalize units (g/kg, ml/l, tbsp/tsp)
+   - Checkbox UI + reset
+   - Export / print
 
-1.  Paste TikTok URL
-2.  Extract → editable recipe
-3.  Save recipe
-4.  Add recipe to week menu
-5.  Generate shopping list
-6.  Cook
+2. Planner Improvements
+   - Day-based meals
+   - Auto-ingredient aggregation
 
-Everything built must strengthen this flow.
+3. Cost Estimation
+   - Price per ingredient
+   - Total recipe cost
+   - Weekly menu cost
 
-------------------------------------------------------------------------
+4. Creator Flow (future)
+   - Creators publish recipes
+   - Users save & remix
 
-## 5. Feature Roadmap
+---
 
-### Phase 1 -- Must-have (Consumer MVP)
+## Deferred (Post-AI / Infra)
 
--   ✅ Recipe extraction
--   ✅ Recipe editor
--   🔜 Shopping list (aggregated, unit-normalized)
--   🔜 Improved week menu (meals per day, servings)
--   🔜 Cost per recipe (manual input → per person calculation)
--   🔜 Shareable recipe/menu links (view-only)
+- Replace mock `/api/extract` with real provider (Gemini / OpenAI / Claude)
+- Replace mock `/api/image` with real image generation
+- Move backend to serverless (Vercel / Cloudflare)
+- Authentication (users & creators)
+- Database (Supabase / Postgres)
 
-### Phase 2 -- Retention & Cloud
+---
 
--   Optional login (magic link / Google)
--   Cloud sync (Supabase)
--   "Save to cloud" CTA
--   Menu export (PDF / print)
+## Design Principles
 
-### Phase 3 -- Creator entry (no pivot)
+- Never block product progress on AI infra
+- Backend owns all AI keys
+- Frontend only talks to `/api/*`
+- UX > AI cleverness
+- Deterministic, debuggable flows
 
--   Claim recipe
--   Verified creator profile
--   Creator menus (curated)
--   Optional monetization later
+---
 
-------------------------------------------------------------------------
+## Continuation Keyword
 
-## 6. Data Model (Target)
+Use the keyword below in a new chat to resume instantly:
 
--   users
--   recipes
--   recipe_ingredients
--   recipe_steps
--   menus
--   menu_items
--   shopping_lists
--   imports (TikTok URL, status, raw extract)
-
-Database: **Supabase (Postgres)**
-
-------------------------------------------------------------------------
-
-## 7. Backend Architecture (Planned)
-
-AI must run server-side.
-
-Endpoints: - POST /api/extract - POST /api/image - POST
-/api/shopping-list
-
-Frontend never sees API keys.
-
-------------------------------------------------------------------------
-
-## 8. AI Strategy
-
--   Two-pass extraction:
-    1.  Raw extract
-    2.  Normalize + validate
--   Confidence indicators in UI
--   User corrections feed future prompt improvements
--   Source evidence always preserved
-
-------------------------------------------------------------------------
-
-## 9. What TokToTable Is NOT (Yet)
-
--   Not a creator marketplace
--   Not a restaurant ERP
--   Not a nutrition tracker
--   Not a social network
-
-These may come later, but are explicitly **out of scope** now.
-
-------------------------------------------------------------------------
-
-## 10. Success Criteria (Consumer)
-
-TokToTable is successful when: - Users return weekly - Shopping lists
-are actually used - Recipes are edited, not just extracted - People say:
-"I don't cook from TikTok without this anymore"
-
-------------------------------------------------------------------------
-
-## 11. Immediate Next Steps
-
-1.  Move AI calls to backend (serverless)
-2.  Build shopping list feature
-3.  Refine week menu UX
-4.  Introduce cost-per-recipe
-5.  Add shareable links
-
-------------------------------------------------------------------------
-
-## 12. How to Use This Document
-
--   Share this file in new chats to restore full context
--   Treat this as the canonical plan
--   Update it when major decisions change
-
-------------------------------------------------------------------------
-
-**TokToTable** From scroll → to table.
+**TOKTOTABLE_SYNC_V1**
