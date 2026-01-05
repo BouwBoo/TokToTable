@@ -1,8 +1,8 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { Recipe, Ingredient, Step, Comment } from '../types';
-import { GoogleGenAI } from "@google/genai";
-import { generateRecipeImage } from '../services/geminiService';
+import { generateRecipeImage } from '../services/aiClient';
+
 
 interface RecipeEditorProps {
   recipe: Recipe;
@@ -226,15 +226,23 @@ const RecipeEditor: React.FC<RecipeEditorProps> = ({ recipe, onSave, onClose }) 
     });
   };
 
-  const handleRegenerateImage = async () => {
-    setIsGeneratingImage(true);
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-    const newImageUrl = await generateRecipeImage(ai, editedRecipe.title, editedRecipe.ingredients);
+const handleRegenerateImage = async () => {
+  setIsGeneratingImage(true);
+  try {
+    const newImageUrl = await generateRecipeImage(
+      editedRecipe.title,
+      editedRecipe.ingredients
+    );
     if (newImageUrl) {
       updateState({ ...editedRecipe, thumbnail_url: newImageUrl });
     }
+  } catch (err) {
+    console.error("Image generation failed", err);
+  } finally {
     setIsGeneratingImage(false);
-  };
+  }
+};
+
 
   const handleStepDrop = (index: number) => {
     if (draggedStepIndex === null) return;
