@@ -2,4 +2,4 @@ node_modules
 .env
 dist
 .env.local
-.env.local
+.DS_Store

@@ -1,108 +1,71 @@
-
-import { GoogleGenAI, Type } from "@google/genai";
-import { SYSTEM_INSTRUCTION } from "../constants";
+// services/geminiService.ts
+import { Ingredient } from "../types";
 
 /**
- * Genereert een professionele culinaire foto op basis van het recept.
+ * Frontend calls backend endpoint that generates an image (mock for now).
+ * Returns a data URL string (e.g. data:image/png;base64,...)
  */
-export const generateRecipeImage = async (ai: any, title: string, ingredients: any[]) => {
+export async function generateRecipeImage(
+  _ai: any, // legacy param, ignored (keeps existing call sites stable)
+  title: string,
+  ingredients: Ingredient[]
+): Promise<string | null> {
   try {
-    const ingredientList = ingredients.map(i => i.name).slice(0, 5).join(", ");
-    const prompt = `Professional food photography of ${title}, containing ${ingredientList}. 
-    High-end restaurant plating, macro shot, soft cinematic lighting, 8k resolution, appetizing, 
-    shallow depth of field, vibrant colors, steam rising if hot dish.`;
-
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash-image',
-      contents: [{ parts: [{ text: prompt }] }],
-      config: {
-        imageConfig: {
-          aspectRatio: "3:4"
-        }
-      }
+    const resp = await fetch("/api/image", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title, ingredients }),
     });
 
-    for (const part of response.candidates[0].content.parts) {
-      if (part.inlineData) {
-        return `data:image/png;base64,${part.inlineData.data}`;
-      }
-    }
-  } catch (error) {
-    console.error("Image generation failed:", error);
-  }
-  return `https://picsum.photos/seed/${encodeURIComponent(title)}/400/600`; // Fallback
-};
+    if (!resp.ok) return null;
 
-export const extractRecipeFromUrl = async (url: string) => {
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-
-  try {
-    // FASE 1: Tekstuele extractie en grounding via Google Search
-    const response = await ai.models.generateContent({
-      model: "gemini-3-pro-preview",
-      contents: `Search for and extract the full recipe details for this TikTok: ${url}. 
-      If the creator is @itshelenmelon, prioritize her specific recipe instructions. 
-      I need the exact dish title, creator name, ingredients (with quantities), and clear steps.`,
-      config: {
-        systemInstruction: SYSTEM_INSTRUCTION,
-        tools: [{ googleSearch: {} }],
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            title: { type: Type.STRING },
-            creator: { type: Type.STRING },
-            ingredients: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  name: { type: Type.STRING },
-                  quantity: { type: Type.STRING },
-                  unit: { type: Type.STRING },
-                  raw_text: { type: Type.STRING }
-                },
-                required: ["name", "raw_text"]
-              }
-            },
-            steps: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  step_number: { type: Type.INTEGER },
-                  instruction: { type: Type.STRING }
-                },
-                required: ["step_number", "instruction"]
-              }
-            }
-          },
-          required: ["title", "ingredients", "steps"]
-        }
-      },
-    });
-
-    const result = JSON.parse(response.text || '{}');
-    
-    const sources = response.candidates?.[0]?.groundingMetadata?.groundingChunks?.map((chunk: any) => ({
-      title: chunk.web?.title,
-      uri: chunk.web?.uri
-    })).filter((s: any) => s.uri) || [];
-
-    if (!result || !result.title) {
-      return null;
-    }
-
-    // FASE 2: Genereer een realistische afbeelding van het gerecht
-    const imageUrl = await generateRecipeImage(ai, result.title, result.ingredients);
-
-    return { 
-      ...result, 
-      sources,
-      thumbnail_url: imageUrl
-    };
+    const data = await resp.json();
+    return data?.ok ? (data.dataUrl as string) : null;
   } catch (e) {
-    console.error("Gemini Extraction Error:", e);
+    console.error("generateRecipeImage failed:", e);
     return null;
   }
-};
+}
+
+/**
+ * Extract recipe via backend endpoint (mock for now).
+ * Returns the shape your app expects.
+ */
+export async function extractRecipeFromUrl(url: string) {
+  try {
+    const resp = await fetch("/api/extract", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url }),
+    });
+
+    if (!resp.ok) return null;
+
+    const data = await resp.json();
+    if (!data?.ok || !data?.result) return null;
+
+    const result = data.result;
+
+    // Provide a visual fallback if thumbnail_url is missing
+    const fallbackSvg = `
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024">
+  <rect width="100%" height="100%" fill="#0f172a"/>
+  <text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle"
+        font-family="Arial" font-size="48" fill="#e2e8f0">
+    TokToTable (no image yet)
+  </text>
+</svg>
+`.trim();
+
+    const fallbackThumbnail = `data:image/svg+xml;base64,${btoa(fallbackSvg)}`;
+
+    return {
+      ...result,
+      sources: data.sources || [url],
+      thumbnail_url: result.thumbnail_url || fallbackThumbnail,
+    };
+  } catch (e) {
+    console.error("extractRecipeFromUrl failed:", e);
+    return null;
+  }
+}

@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { Recipe, Ingredient, Step, Comment } from '../types';
-import { generateRecipeImage } from '../services/aiClient';
+import { generateRecipeImage } from "../services/aiClient";
 
 
 interface RecipeEditorProps {
@@ -228,20 +228,17 @@ const RecipeEditor: React.FC<RecipeEditorProps> = ({ recipe, onSave, onClose }) 
 
 const handleRegenerateImage = async () => {
   setIsGeneratingImage(true);
-  try {
-    const newImageUrl = await generateRecipeImage(
-      editedRecipe.title,
-      editedRecipe.ingredients
-    );
-    if (newImageUrl) {
-      updateState({ ...editedRecipe, thumbnail_url: newImageUrl });
-    }
-  } catch (err) {
-    console.error("Image generation failed", err);
-  } finally {
-    setIsGeneratingImage(false);
+
+  // ✅ Calls backend (/api/image) via services/aiClient -> services/geminiService
+  const newImageUrl = await generateRecipeImage(editedRecipe.title, editedRecipe.ingredients);
+
+  if (newImageUrl) {
+    updateState({ ...editedRecipe, thumbnail_url: newImageUrl });
   }
+
+  setIsGeneratingImage(false);
 };
+
 
 
   const handleStepDrop = (index: number) => {
