@@ -348,10 +348,16 @@ exports.handler = async (event) => {
   // Soft rate limit (burst protection)
   const rl = rateLimit(ip);
   if (rl.limited) {
+    const retryAfter = Math.ceil((rl.resetAt - Date.now()) / 1000);
     return json(
       429,
       { ok: false, error: "Rate limit exceeded", reqId },
-      { "Retry-After": String(Math.ceil((rl.resetAt - Date.now()) / 1000)) }
+      {
+        "Retry-After": String(retryAfter),
+        "X-RateLimit-Limit": String(RATE_MAX),
+        "X-RateLimit-Remaining": "0",
+        "X-RateLimit-Reset": String(rl.resetAt),
+      }
     );
   }
 
@@ -381,9 +387,17 @@ exports.handler = async (event) => {
 
   const apiKey = process.env.GEMINI_API_KEY;
 
-  // No key => keep safe behavior
+  // No key => safe fallback behavior
   if (!apiKey) {
-    return json(200, { ok: true, source: "mock", recipe: MOCK_RECIPE, reqId });
+    return json(
+      200,
+      { ok: true, source: "mock", recipe: MOCK_RECIPE, reqId },
+      {
+        "X-RateLimit-Limit": String(RATE_MAX),
+        "X-RateLimit-Remaining": String(rl.remaining),
+        "X-RateLimit-Reset": String(rl.resetAt),
+      }
+    );
   }
 
   const t0 = Date.now();
@@ -415,7 +429,15 @@ exports.handler = async (event) => {
   const lm = await listModels(apiKey);
   if (!lm.ok || lm.models.length === 0) {
     console.log(JSON.stringify({ reqId, ip, ok: true, source: "mock-fallback", reason: "no-models" }));
-    return json(200, { ok: true, source: "mock-fallback", recipe: MOCK_RECIPE, reqId });
+    return json(
+      200,
+      { ok: true, source: "mock-fallback", recipe: MOCK_RECIPE, reqId },
+      {
+        "X-RateLimit-Limit": String(RATE_MAX),
+        "X-RateLimit-Remaining": String(rl.remaining),
+        "X-RateLimit-Reset": String(rl.resetAt),
+      }
+    );
   }
 
   const preferred = (process.env.GEMINI_MODEL || "").trim();
@@ -461,16 +483,24 @@ exports.handler = async (event) => {
         })
       );
 
-      return json(200, {
-        ok: true,
-        source: "gemini",
-        model,
-        creator,
-        thumbnail_url,
-        recipe,
-        sources: url ? [{ title: url, uri: url }] : [],
-        reqId,
-      });
+      return json(
+        200,
+        {
+          ok: true,
+          source: "gemini",
+          model,
+          creator,
+          thumbnail_url,
+          recipe,
+          sources: url ? [{ title: url, uri: url }] : [],
+          reqId,
+        },
+        {
+          "X-RateLimit-Limit": String(RATE_MAX),
+          "X-RateLimit-Remaining": String(rl.remaining),
+          "X-RateLimit-Reset": String(rl.resetAt),
+        }
+      );
     } catch (err) {
       const ms = Date.now() - tModel;
       attempts.push({ model, statusCode: 0, hasText: false, ms, error: String(err?.message || err) });
@@ -489,15 +519,23 @@ exports.handler = async (event) => {
     })
   );
 
-  return json(200, {
-    ok: true,
-    source: "mock-fallback",
-    error: "Gemini returned no parseable JSON.",
-    debug: attempts,
-    recipe: MOCK_RECIPE,
-    creator,
-    thumbnail_url,
-    sources: url ? [{ title: url, uri: url }] : [],
-    reqId,
-  });
+  return json(
+    200,
+    {
+      ok: true,
+      source: "mock-fallback",
+      error: "Gemini returned no parseable JSON.",
+      debug: attempts,
+      recipe: MOCK_RECIPE,
+      creator,
+      thumbnail_url,
+      sources: url ? [{ title: url, uri: url }] : [],
+      reqId,
+    },
+    {
+      "X-RateLimit-Limit": String(RATE_MAX),
+      "X-RateLimit-Remaining": String(rl.remaining),
+      "X-RateLimit-Reset": String(rl.resetAt),
+    }
+  );
 };
