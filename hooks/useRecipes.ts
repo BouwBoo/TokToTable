@@ -29,7 +29,7 @@ export function useRecipes() {
       });
   }, [recipes, filter, sortBy]);
 
-  const extractFromUrl = async (url: string) => {
+  const extractFromUrl = async (url: string, caption?: string) => {
     if (!url.includes('tiktok.com')) {
       alert('Please enter a valid TikTok URL');
       return;
@@ -38,7 +38,7 @@ export function useRecipes() {
     setProcessingState('fetching');
 
     try {
-      const result = await extractRecipeFromUrl(url);
+      const result = await extractRecipeFromUrl(url, caption);
 
       if (result && result.title) {
         setProcessingState('synthesizing');
