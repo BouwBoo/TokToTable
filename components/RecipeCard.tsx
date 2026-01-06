@@ -68,20 +68,29 @@ const RecipeCard: React.FC<RecipeCardProps> = ({ recipe, onClick, onDelete }) =>
           </div>
         )}
         
-        {imgError ? (
-          <div className="w-full h-full bg-gradient-to-br from-slate-800 to-slate-900 flex flex-col items-center justify-center p-6 text-center">
-            <i className="fa-solid fa-utensils text-4xl text-slate-700 mb-3"></i>
-            <span className="text-[10px] font-bold text-slate-600 uppercase tracking-widest">Image Unavailable</span>
-          </div>
-        ) : (
-          <img 
-            src={recipe.thumbnail_url} 
-            alt={recipe.title}
-            onLoad={() => setImgLoading(false)}
-            onError={() => { setImgError(true); setImgLoading(false); }}
-            className={`w-full h-full object-cover group-hover:scale-110 transition-transform duration-500 ${imgLoading ? 'opacity-0' : 'opacity-100'}`}
-          />
-        )}
+{imgError ? (
+  <div className="w-full h-full bg-gradient-to-br from-slate-800 to-slate-900 flex flex-col items-center justify-center p-6 text-center">
+    <i className="fa-solid fa-utensils text-4xl text-slate-700 mb-3"></i>
+    <span className="text-[10px] font-bold text-slate-600 uppercase tracking-widest">
+      Image Unavailable
+    </span>
+  </div>
+) : (
+  <img
+    src={recipe.thumbnail_url}
+    alt={recipe.title}
+    onLoad={() => setImgLoading(false)}
+    onError={() => {
+      setImgError(true);
+      setImgLoading(false);
+    }}
+    style={{ objectPosition: "center 80%" }}
+    className={`w-full h-full object-cover group-hover:scale-110 transition-transform duration-500 ${
+      imgLoading ? "opacity-0" : "opacity-100"
+    }`}
+  />
+)}
+
 
         <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-transparent to-transparent opacity-80"></div>
         <div className="absolute bottom-4 left-4 right-4">
