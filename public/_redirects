@@ -1,0 +1,5 @@
+/api/health   /.netlify/functions/health   200
+/api/extract  /.netlify/functions/extract  200
+/api/image    /.netlify/functions/image    200
+
+/*           /index.html                  200
