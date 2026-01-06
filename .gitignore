@@ -3,3 +3,5 @@ node_modules
 dist
 .env.local
 .DS_Store
+
+printf "\n# macOS\n.DS_Store\n" >> .gitignore

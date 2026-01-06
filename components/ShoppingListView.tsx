@@ -351,6 +351,7 @@ const ShoppingListView: React.FC<ShoppingListViewProps> = ({
   // polish: keyboard flow & highlight
   const priceInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const [highlightItemId, setHighlightItemId] = useState<string | null>(null);
+const [pulseAllPriced, setPulseAllPriced] = useState(false);
 
   const listTopRef = useRef<HTMLDivElement | null>(null);
 
@@ -574,19 +575,30 @@ const ShoppingListView: React.FC<ShoppingListViewProps> = ({
     window.setTimeout(() => setHighlightItemId(prev => (prev === itemId ? null : prev)), 800);
   };
 
-  const focusNextMissingAfter = (afterItemId: string | null) => {
-    if (!showCosts) return;
-    if (missingItemIds.length === 0) return;
+  const pulseAllPricedNow = () => {
+  setPulseAllPriced(true);
+  window.setTimeout(() => setPulseAllPriced(false), 450);
+};
 
-    if (!afterItemId) {
-      focusItemPrice(missingItemIds[0]);
-      return;
-    }
 
-    const idx = missingItemIds.indexOf(afterItemId);
-    const nextId = idx === -1 ? missingItemIds[0] : missingItemIds[idx + 1] ?? null;
-    if (nextId) focusItemPrice(nextId);
-  };
+const focusNextMissingAfter = (afterItemId: string | null) => {
+  if (!showCosts) return;
+
+  if (missingItemIds.length === 0) {
+    pulseAllPricedNow();
+    return;
+  }
+
+  if (!afterItemId) {
+    focusItemPrice(missingItemIds[0]);
+    return;
+  }
+
+  const idx = missingItemIds.indexOf(afterItemId);
+  const nextId = idx === -1 ? missingItemIds[0] : missingItemIds[idx + 1] ?? null;
+  if (nextId) focusItemPrice(nextId);
+};
+
 
   const jumpToNextMissing = () => focusNextMissingAfter(null);
 
@@ -1803,29 +1815,34 @@ if (e.key === 'f' || e.key === 'F') {
                     {items.length} items • {checkedCount} checked • {pricedCoverageLabel}
                   </p>
 
-                  {showCosts && mode === 'totals' && (
-                    <p className="text-[11px] text-slate-500 mt-1">
-                      {totalsKnownSummary.missingCount === 0 ? (
-                        <>
-                          Total:{' '}
-                          <span className="text-slate-200 font-black">{formatMoney(totalsKnownSummary.knownTotal)}</span>
-                        </>
-                      ) : (
-                        <>
-                          Known:{' '}
-                          <span className="text-slate-200 font-black">{formatMoney(totalsKnownSummary.knownTotal)}</span>
-                          <button
-                            type="button"
-                            onClick={jumpToNextMissing}
-                            className="ml-2 text-slate-500 hover:text-white underline underline-offset-4"
-                            title="Jump to next missing price"
-                          >
-                            • Missing prices: {totalsKnownSummary.missingCount}
-                          </button>
-                        </>
-                      )}
-                    </p>
-                  )}
+{showCosts && mode === 'totals' && (
+  <p className="text-[11px] text-slate-500 mt-1">
+    {totalsKnownSummary.missingCount === 0 ? (
+      <>
+        Total{excludePantryFromTotalsCost ? ' (excl pantry)' : ''}:{' '}
+        <span
+          className={`text-slate-200 font-black ${pulseAllPriced ? 'ring-2 ring-emerald-500/20 rounded-lg px-1' : ''}`}
+        >
+          {formatMoney(totalsKnownSummary.knownTotal)}
+        </span>
+      </>
+    ) : (
+      <>
+        Known{excludePantryFromTotalsCost ? ' (excl pantry)' : ''}:{' '}
+        <span className="text-slate-200 font-black">{formatMoney(totalsKnownSummary.knownTotal)}</span>
+        <button
+          type="button"
+          onClick={jumpToNextMissing}
+          className="ml-2 text-slate-500 hover:text-white underline underline-offset-4"
+          title="Jump to next missing price"
+        >
+          • Missing prices: {totalsKnownSummary.missingCount}
+        </button>
+      </>
+    )}
+  </p>
+)}
+
                 </div>
               </div>
 

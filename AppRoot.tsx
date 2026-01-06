@@ -77,7 +77,10 @@ const App: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen pb-20 bg-slate-950 text-slate-200">
+    <div className="min-h-screen bg-[#070A18] text-slate-100">
+      {/* Landing-style ambient glow (safe fixed layer) */}
+      <div className="tt-glow-bg" />
+
       <Navbar onSetView={setCurrentView} currentView={currentView} />
 
       <main className="container mx-auto px-6 pt-12">

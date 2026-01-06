@@ -1,0 +1,50 @@
+/* === TokToTable Shared Theme (Landing + App) === */
+
+:root {
+  --tt-cyan: #25F4EE;
+  --tt-pink: #FE2C55;
+  --tt-blue: #070A18; /* landing blue */
+}
+
+/* Safe gradient (do NOT touch existing tiktok-gradient) */
+.tt-gradient {
+  background: linear-gradient(135deg, var(--tt-cyan), var(--tt-pink));
+}
+
+.tt-gradient-text {
+  background: linear-gradient(90deg, var(--tt-cyan), var(--tt-pink));
+}
+
+/**
+ * Shared ambient background
+ * Used by BOTH landing + app
+ * Calm, top-weighted, not noisy
+ */
+.tt-bg {
+  position: fixed;
+  inset: 0;
+  z-index: -10;
+  pointer-events: none;
+  background:
+    radial-gradient(
+      80% 60% at 50% 0%,
+      rgba(255, 255, 255, 0.06),
+      rgba(0, 0, 0, 0) 60%
+    ),
+    radial-gradient(
+      40% 30% at 20% 10%,
+      rgba(37, 244, 238, 0.10),
+      transparent 60%
+    ),
+    radial-gradient(
+      35% 30% at 80% 20%,
+      rgba(254, 44, 85, 0.12),
+      transparent 65%
+    ),
+    linear-gradient(
+      to bottom,
+      var(--tt-blue),
+      #05070f 60%,
+      #04060d
+    );
+}
