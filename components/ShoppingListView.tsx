@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { PlannerData, Recipe, ShoppingList } from '../types';
 
 interface ShoppingListViewProps {
@@ -28,18 +28,7 @@ type Aisle =
   | 'Beverages'
   | 'Other';
 
-const AISLES: Aisle[] = [
-  'Produce',
-  'Dairy',
-  'Meat',
-  'Seafood',
-  'Dry',
-  'Spices',
-  'Frozen',
-  'Bakery',
-  'Beverages',
-  'Other',
-];
+const AISLES: Aisle[] = ['Produce', 'Dairy', 'Meat', 'Seafood', 'Dry', 'Spices', 'Frozen', 'Bakery', 'Beverages', 'Other'];
 
 const LS_AISLE_OVERRIDES = 'tokchef_aisle_overrides_v1';
 const LS_PANTRY = 'tokchef_pantry_v1';
@@ -49,6 +38,9 @@ const LS_PRICES_V1 = 'tokchef_prices_v1';
 
 // v1.5 normalized store (base unit: kg/l/pcs)
 const LS_PRICES_V2 = 'tokchef_prices_v2';
+
+// Route A: persist UI prefs
+const LS_UI_PREFS = 'toktotable_ui_prefs_v1';
 
 type BaseUnit = 'kg' | 'l' | 'pcs';
 
@@ -169,9 +161,7 @@ const detectBaseUnitFromItemUnit = (unitRaw: string): BaseUnit => {
   const u = String(unitRaw || '').toLowerCase().trim();
   if (u === 'g' || u === 'kg') return 'kg';
   if (u === 'ml' || u === 'l') return 'l';
-  // handle a few common count spellings
   if (u === 'pcs' || u === 'pc' || u === 'piece' || u === 'pieces' || u === 'stk' || u === 'st') return 'pcs';
-  // fallback: treat as pcs (best effort)
   return 'pcs';
 };
 
@@ -195,9 +185,8 @@ const convertQuantityToBase = (quantity: number, unitRaw: string, baseUnit: Base
 
   // pcs
   if (baseUnit === 'pcs') {
-    // If someone stores "pcs" as "", we still treat it as count
     if (u === '' || u === 'pcs' || u === 'pc' || u === 'piece' || u === 'pieces' || u === 'stk' || u === 'st') return quantity;
-    return quantity; // best effort
+    return quantity;
   }
 
   return null;
@@ -240,7 +229,6 @@ type RecipeGroup = {
 };
 
 const migratePricesV1toV2 = (rawV1: unknown): NormalizedPriceMap => {
-  // Convert legacy map (ingredientKey::unit => €/unit) into normalized (ingredientKey::baseUnit => €/baseUnit)
   const out: NormalizedPriceMap = {};
   if (!rawV1 || typeof rawV1 !== 'object') return out;
 
@@ -257,7 +245,6 @@ const migratePricesV1toV2 = (rawV1: unknown): NormalizedPriceMap => {
     let baseUnit: BaseUnit = detectBaseUnitFromItemUnit(unit);
     let pricePerBaseUnit = ppu;
 
-    // legacy may store €/g or €/ml — normalize to €/kg or €/l
     if (unit === 'g') {
       baseUnit = 'kg';
       pricePerBaseUnit = ppu * 1000;
@@ -287,6 +274,50 @@ const migratePricesV1toV2 = (rawV1: unknown): NormalizedPriceMap => {
   return out;
 };
 
+const pillBtn = (active: boolean) =>
+  `px-3 py-1 rounded-lg text-[10px] font-black uppercase transition-all ${
+    active ? 'bg-pink-500 text-white' : 'text-slate-400 hover:text-white hover:bg-white/5'
+  }`;
+
+const smallBtn =
+  'px-3 py-2 rounded-xl text-[11px] font-bold bg-white/5 hover:bg-white/10 border border-white/10 hover:border-white/20 transition-all';
+
+const iconBtn =
+  'w-9 h-9 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 hover:border-white/20 transition-all grid place-items-center text-slate-300';
+
+const field =
+  'w-full bg-slate-950/60 border border-white/10 rounded-xl px-3 py-2 text-sm outline-none focus:border-pink-500/40 focus:ring-2 focus:ring-pink-500/10';
+
+type AisleStats = {
+  aisle: Aisle;
+  totalItems: number;
+  missingPrices: number;
+  complete: boolean;
+  subtotalKnown: number; // sum of known item costs (excluding pantry if excludePantryFromTotalsCost)
+  firstMissingItemId: string | null;
+};
+
+type UiPrefs = {
+  mode: ViewMode;
+  showOnlyUnchecked: boolean;
+  groupByAisle: boolean;
+  hidePantry: boolean;
+  showCosts: boolean;
+  excludePantryFromTotalsCost: boolean;
+  autoExpandUnchecked: boolean;
+  collapseCompleteAisles: boolean;
+  collapsedAisles: Aisle[];
+};
+
+const safeParseJson = <T,>(raw: string | null): T | null => {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return null;
+  }
+};
+
 const ShoppingListView: React.FC<ShoppingListViewProps> = ({
   shoppingList,
   planner,
@@ -296,22 +327,33 @@ const ShoppingListView: React.FC<ShoppingListViewProps> = ({
   onResetChecks,
   onClear,
 }) => {
-  // Presets
-  const [mode, setMode] = useState<ViewMode>('totals');
-  const [showOnlyUnchecked, setShowOnlyUnchecked] = useState(true);
+  // ---------- Route A: load UI prefs once ----------
+  const uiPrefs = useMemo(() => safeParseJson<UiPrefs>(localStorage.getItem(LS_UI_PREFS)), []);
 
-  // Totals: breakdown + grouping
+  const [mode, setMode] = useState<ViewMode>(uiPrefs?.mode ?? 'totals');
+  const [showOnlyUnchecked, setShowOnlyUnchecked] = useState(uiPrefs?.showOnlyUnchecked ?? true);
+
   const [expandedItemIds, setExpandedItemIds] = useState<Set<string>>(new Set());
-  const [autoExpandUnchecked, setAutoExpandUnchecked] = useState(false);
+  const [autoExpandUnchecked, setAutoExpandUnchecked] = useState(uiPrefs?.autoExpandUnchecked ?? false);
 
-  const [groupByAisle, setGroupByAisle] = useState(true);
-  const [hidePantry, setHidePantry] = useState(false);
+  const [groupByAisle, setGroupByAisle] = useState(uiPrefs?.groupByAisle ?? true);
+  const [hidePantry, setHidePantry] = useState(uiPrefs?.hidePantry ?? false);
 
-  // Costs
-  const [showCosts, setShowCosts] = useState(true);
-  const [excludePantryFromTotalsCost, setExcludePantryFromTotalsCost] = useState(true);
+  const [showCosts, setShowCosts] = useState(uiPrefs?.showCosts ?? true);
+  const [excludePantryFromTotalsCost, setExcludePantryFromTotalsCost] = useState(uiPrefs?.excludePantryFromTotalsCost ?? true);
 
-  // Local overrides
+  const [cleanupOpen, setCleanupOpen] = useState(false);
+
+  // polish: collapse complete aisles (optional)
+  const [collapseCompleteAisles, setCollapseCompleteAisles] = useState(uiPrefs?.collapseCompleteAisles ?? true);
+  const [collapsedAisles, setCollapsedAisles] = useState<Set<Aisle>>(() => new Set(uiPrefs?.collapsedAisles ?? []));
+
+  // polish: keyboard flow & highlight
+  const priceInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
+  const [highlightItemId, setHighlightItemId] = useState<string | null>(null);
+
+  const listTopRef = useRef<HTMLDivElement | null>(null);
+
   const [aisleOverrides, setAisleOverrides] = useState<Record<string, Aisle>>(() => {
     try {
       const raw = localStorage.getItem(LS_AISLE_OVERRIDES);
@@ -331,7 +373,6 @@ const ShoppingListView: React.FC<ShoppingListViewProps> = ({
     }
   });
 
-  // ✅ v1.5 normalized prices with auto-migration from v1
   const [prices, setPrices] = useState<NormalizedPriceMap>(() => {
     try {
       const rawV2 = localStorage.getItem(LS_PRICES_V2);
@@ -340,12 +381,10 @@ const ShoppingListView: React.FC<ShoppingListViewProps> = ({
         return parsed && typeof parsed === 'object' ? parsed : {};
       }
 
-      // if no v2 yet, try migrate v1
       const rawV1 = localStorage.getItem(LS_PRICES_V1);
       if (rawV1) {
         const parsedV1 = JSON.parse(rawV1);
         const migrated = migratePricesV1toV2(parsedV1);
-        // persist immediately
         localStorage.setItem(LS_PRICES_V2, JSON.stringify(migrated));
         return migrated;
       }
@@ -356,6 +395,7 @@ const ShoppingListView: React.FC<ShoppingListViewProps> = ({
     }
   });
 
+  // persist stores
   useEffect(() => {
     try {
       localStorage.setItem(LS_AISLE_OVERRIDES, JSON.stringify(aisleOverrides));
@@ -380,6 +420,36 @@ const ShoppingListView: React.FC<ShoppingListViewProps> = ({
     }
   }, [prices]);
 
+  // ---------- Route A: persist UI prefs ----------
+  useEffect(() => {
+    try {
+      const prefs: UiPrefs = {
+        mode,
+        showOnlyUnchecked,
+        groupByAisle,
+        hidePantry,
+        showCosts,
+        excludePantryFromTotalsCost,
+        autoExpandUnchecked,
+        collapseCompleteAisles,
+        collapsedAisles: Array.from(collapsedAisles),
+      };
+      localStorage.setItem(LS_UI_PREFS, JSON.stringify(prefs));
+    } catch {
+      // ignore
+    }
+  }, [
+    mode,
+    showOnlyUnchecked,
+    groupByAisle,
+    hidePantry,
+    showCosts,
+    excludePantryFromTotalsCost,
+    autoExpandUnchecked,
+    collapseCompleteAisles,
+    collapsedAisles,
+  ]);
+
   const items = shoppingList?.items || [];
   const checkedCount = items.filter(i => i.checked).length;
 
@@ -392,8 +462,8 @@ const ShoppingListView: React.FC<ShoppingListViewProps> = ({
   const plannerOccurrences: PlannerOccurrence[] = useMemo(() => {
     const out: PlannerOccurrence[] = [];
     DAY_ORDER.forEach(day => {
-      const ids = planner?.[day] || [];
-      ids.forEach((recipeId, idx) => {
+      const ids = (planner as any)?.[day] || [];
+      ids.forEach((recipeId: string, idx: number) => {
         const title = recipeTitleById.get(recipeId) || 'Unknown recipe';
         out.push({ key: `${day}-${idx}-${recipeId}`, day, recipeId, idx, title });
       });
@@ -401,7 +471,7 @@ const ShoppingListView: React.FC<ShoppingListViewProps> = ({
     return out;
   }, [planner, recipeTitleById]);
 
-  const hasParts = useMemo(() => items.some(i => Array.isArray(i.parts) && i.parts.length > 0), [items]);
+  const hasParts = useMemo(() => items.some((i: any) => Array.isArray(i.parts) && i.parts.length > 0), [items]);
 
   const getAisleForItem = (ingredientKey: string, label: string): Aisle => {
     return aisleOverrides[ingredientKey] || inferAisle(label, ingredientKey);
@@ -441,8 +511,8 @@ const ShoppingListView: React.FC<ShoppingListViewProps> = ({
   };
 
   const visibleTotals = useMemo(() => {
-    let base = showOnlyUnchecked ? items.filter(i => !i.checked) : items;
-    if (hidePantry) base = base.filter(i => !isPantry(i.ingredientKey));
+    let base = showOnlyUnchecked ? items.filter((i: any) => !i.checked) : items;
+    if (hidePantry) base = base.filter((i: any) => !isPantry(i.ingredientKey));
     return base;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [items, showOnlyUnchecked, hidePantry, pantrySet]);
@@ -452,28 +522,146 @@ const ShoppingListView: React.FC<ShoppingListViewProps> = ({
     if (!autoExpandUnchecked) return;
 
     const next = new Set<string>();
-    visibleTotals.forEach(i => {
+    visibleTotals.forEach((i: any) => {
       if (!i.checked) next.add(i.id);
     });
     setExpandedItemIds(next);
   }, [autoExpandUnchecked, mode, visibleTotals]);
 
   const totalsByAisle = useMemo(() => {
-    const map = new Map<Aisle, typeof visibleTotals>();
+    const map = new Map<Aisle, any[]>();
     for (const a of AISLES) map.set(a, []);
     for (const it of visibleTotals) {
       const aisle = getAisleForItem(it.ingredientKey, it.label);
       map.get(aisle)!.push(it);
     }
     for (const a of AISLES) {
-      map.set(
-        a,
-        (map.get(a) || []).slice().sort((x, y) => x.label.localeCompare(y.label))
-      );
+      map.set(a, (map.get(a) || []).slice().sort((x: any, y: any) => x.label.localeCompare(y.label)));
     }
     return map;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visibleTotals, aisleOverrides]);
+
+  // missing ids in visible list (excl pantry cost if configured)
+  const missingItemIds = useMemo(() => {
+    const ids: string[] = [];
+    if (!showCosts) return ids;
+
+    for (const it of visibleTotals) {
+      if (excludePantryFromTotalsCost && isPantry(it.ingredientKey)) continue;
+      const unit = String(it.unit || '');
+      const baseUnit = detectBaseUnitFromItemUnit(unit);
+      if (getNormalizedPrice(it.ingredientKey, baseUnit) === null) {
+        ids.push(it.id);
+      }
+    }
+    return ids;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visibleTotals, prices, pantrySet, excludePantryFromTotalsCost, showCosts]);
+
+  const focusItemPrice = (itemId: string) => {
+    const el = priceInputRefs.current[itemId];
+    if (!el) return;
+
+    document.getElementById(`item-${itemId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+    requestAnimationFrame(() => {
+      el.focus();
+      el.select?.();
+    });
+
+    setHighlightItemId(itemId);
+    window.setTimeout(() => setHighlightItemId(prev => (prev === itemId ? null : prev)), 800);
+  };
+
+  const focusNextMissingAfter = (afterItemId: string | null) => {
+    if (!showCosts) return;
+    if (missingItemIds.length === 0) return;
+
+    if (!afterItemId) {
+      focusItemPrice(missingItemIds[0]);
+      return;
+    }
+
+    const idx = missingItemIds.indexOf(afterItemId);
+    const nextId = idx === -1 ? missingItemIds[0] : missingItemIds[idx + 1] ?? null;
+    if (nextId) focusItemPrice(nextId);
+  };
+
+  const jumpToNextMissing = () => focusNextMissingAfter(null);
+
+  // Route A: totals should always be useful -> known total + missing count
+  const totalsKnownSummary = useMemo(() => {
+    if (!showCosts) return { knownTotal: 0, missingCount: 0 };
+
+    let known = 0;
+    let missing = 0;
+
+    for (const it of visibleTotals) {
+      if (excludePantryFromTotalsCost && isPantry(it.ingredientKey)) continue;
+      const c = itemCost(it.ingredientKey, String(it.unit || ''), Number(it.quantity || 0));
+      if (c === null) missing += 1;
+      else known += c;
+    }
+
+    return { knownTotal: known, missingCount: missing };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visibleTotals, showCosts, prices, pantrySet, excludePantryFromTotalsCost]);
+
+  const aisleStats = useMemo(() => {
+    const by = new Map<Aisle, AisleStats>();
+
+    for (const a of AISLES) {
+      by.set(a, {
+        aisle: a,
+        totalItems: 0,
+        missingPrices: 0,
+        complete: true,
+        subtotalKnown: 0,
+        firstMissingItemId: null,
+      });
+    }
+
+    if (!groupByAisle) return by;
+
+    for (const a of AISLES) {
+      const rows = totalsByAisle.get(a) || [];
+      const st = by.get(a)!;
+      st.totalItems = rows.length;
+
+      let missing = 0;
+      let subtotalKnown = 0;
+      let firstMissing: string | null = null;
+
+      for (const it of rows) {
+        if (!showCosts) continue;
+
+        if (excludePantryFromTotalsCost && isPantry(it.ingredientKey)) {
+          continue;
+        }
+
+        const unit = String(it.unit || '');
+        const c = itemCost(it.ingredientKey, unit, Number(it.quantity || 0));
+
+        if (c === null) {
+          missing += 1;
+          if (!firstMissing) firstMissing = it.id;
+        } else {
+          subtotalKnown += c;
+        }
+      }
+
+      st.missingPrices = missing;
+      st.complete = showCosts ? missing === 0 : true;
+      st.subtotalKnown = subtotalKnown;
+      st.firstMissingItemId = firstMissing;
+
+      by.set(a, st);
+    }
+
+    return by;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [totalsByAisle, groupByAisle, showCosts, prices, pantrySet, excludePantryFromTotalsCost]);
 
   const groups: RecipeGroup[] = useMemo(() => {
     if (!shoppingList) return [];
@@ -484,16 +672,16 @@ const ShoppingListView: React.FC<ShoppingListViewProps> = ({
     const out: RecipeGroup[] = [];
 
     DAY_ORDER.forEach(day => {
-      const ids = planner?.[day] || [];
-      ids.forEach((recipeId, idx) => {
+      const ids = (planner as any)?.[day] || [];
+      ids.forEach((recipeId: string, idx: number) => {
         const recipe = recipeById.get(recipeId);
         const title = recipe?.title || 'Unknown recipe';
 
         const rowMap = new Map<string, RecipeGroupRow>();
 
-        for (const it of items) {
+        for (const it of items as any[]) {
           const parts = it.parts || [];
-          const relevant = parts.filter(p => p.recipeId === recipeId && (p.day ? p.day === day : true));
+          const relevant = parts.filter((p: any) => p.recipeId === recipeId && (p.day ? p.day === day : true));
           if (relevant.length === 0) continue;
 
           let qty = 0;
@@ -556,8 +744,8 @@ const ShoppingListView: React.FC<ShoppingListViewProps> = ({
   const exportTextTotals = useMemo(() => {
     const lines = visibleTotals
       .slice()
-      .sort((a, b) => a.label.localeCompare(b.label))
-      .map(i => {
+      .sort((a: any, b: any) => a.label.localeCompare(b.label))
+      .map((i: any) => {
         const p = prettyAmount(i.quantity, String(i.unit || ''));
         const amount = `${formatQty(p.qty)} ${p.unit}`.trim();
         const prefix = i.checked ? '[x]' : '[ ]';
@@ -640,9 +828,8 @@ const ShoppingListView: React.FC<ShoppingListViewProps> = ({
     win.document.close();
   };
 
-  // Totals CSV export (includes normalized prices)
   const handleExportShoppingCsv = () => {
-    const rows = visibleTotals.map(i => {
+    const rows = visibleTotals.map((i: any) => {
       const aisle = getAisleForItem(i.ingredientKey, i.label);
       const pantry = isPantry(i.ingredientKey) ? '1' : '0';
       const unit = String(i.unit || '');
@@ -677,16 +864,12 @@ const ShoppingListView: React.FC<ShoppingListViewProps> = ({
       'itemCost',
     ];
 
-    const csv =
-      header.join(',') +
-      '\n' +
-      rows.map(r => header.map(h => escapeCsv((r as any)[h])).join(',')).join('\n');
+    const csv = header.join(',') + '\n' + rows.map(r => header.map(h => escapeCsv((r as any)[h])).join(',')).join('\n');
 
     const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
     downloadTextFile(`toktotable-shopping-${stamp}.csv`, csv, 'text/csv');
   };
 
-  // Price CSV export/import (v1.5): ingredientKey,baseUnit,pricePerBaseUnit
   const handleExportPriceCsv = () => {
     const entries = (Object.values(prices) as NormalizedPriceEntry[]).sort((a, b) =>
       (a.ingredientKey + '::' + a.baseUnit).localeCompare(b.ingredientKey + '::' + b.baseUnit)
@@ -715,11 +898,9 @@ const ShoppingListView: React.FC<ShoppingListViewProps> = ({
     const header = lines[0].split(',').map(h => h.trim());
     const idxKey = header.indexOf('ingredientKey');
 
-    // v1.5 columns
     const idxBaseUnit = header.indexOf('baseUnit');
     const idxPriceBase = header.indexOf('pricePerBaseUnit');
 
-    // legacy columns (v1.4)
     const idxUnitLegacy = header.indexOf('unit');
     const idxPriceLegacy = header.indexOf('pricePerUnit');
 
@@ -761,10 +942,10 @@ const ShoppingListView: React.FC<ShoppingListViewProps> = ({
       const ingredientKey = (cols[idxKey] || '').trim();
       if (!ingredientKey) continue;
 
-      // Prefer v1.5 schema if present
       if (idxBaseUnit !== -1 && idxPriceBase !== -1) {
         const baseUnitRaw = (cols[idxBaseUnit] || '').trim().toLowerCase();
-        const baseUnit: BaseUnit = baseUnitRaw === 'kg' || baseUnitRaw === 'l' || baseUnitRaw === 'pcs' ? (baseUnitRaw as BaseUnit) : 'pcs';
+        const baseUnit: BaseUnit =
+          baseUnitRaw === 'kg' || baseUnitRaw === 'l' || baseUnitRaw === 'pcs' ? (baseUnitRaw as BaseUnit) : 'pcs';
         const priceStr = cols[idxPriceBase] || '';
         const price = Number(String(priceStr).replace(',', '.'));
         if (!Number.isFinite(price) || price < 0) continue;
@@ -775,7 +956,6 @@ const ShoppingListView: React.FC<ShoppingListViewProps> = ({
         continue;
       }
 
-      // Fallback legacy schema (unit,pricePerUnit)
       if (idxUnitLegacy !== -1 && idxPriceLegacy !== -1) {
         const unit = (cols[idxUnitLegacy] || '').trim().toLowerCase();
         const priceStr = cols[idxPriceLegacy] || '';
@@ -823,6 +1003,8 @@ const ShoppingListView: React.FC<ShoppingListViewProps> = ({
     setShowOnlyUnchecked(true);
     setAutoExpandUnchecked(false);
     setExpandedItemIds(new Set());
+    setCleanupOpen(false);
+    requestAnimationFrame(() => listTopRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
   };
 
   const applyCookingPreset = () => {
@@ -830,6 +1012,8 @@ const ShoppingListView: React.FC<ShoppingListViewProps> = ({
     setShowOnlyUnchecked(false);
     setAutoExpandUnchecked(false);
     setExpandedItemIds(new Set());
+    setCleanupOpen(false);
+    requestAnimationFrame(() => listTopRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
   };
 
   const toggleExpanded = (itemId: string) => {
@@ -842,7 +1026,7 @@ const ShoppingListView: React.FC<ShoppingListViewProps> = ({
   };
 
   const collapseAll = () => setExpandedItemIds(new Set());
-  const expandAllVisible = () => setExpandedItemIds(new Set(visibleTotals.map(i => i.id)));
+  const expandAllVisible = () => setExpandedItemIds(new Set(visibleTotals.map((i: any) => i.id)));
 
   const setOverride = (ingredientKey: string, aisle: Aisle) => {
     setAisleOverrides(prev => ({ ...prev, [ingredientKey]: aisle }));
@@ -866,13 +1050,13 @@ const ShoppingListView: React.FC<ShoppingListViewProps> = ({
   };
 
   const getContributionsForItem = (itemId: string): ContributionRow[] => {
-    const item = items.find(i => i.id === itemId);
+    const item = (items as any[]).find(i => i.id === itemId);
     if (!item) return [];
     const parts = item.parts || [];
 
     const rows: ContributionRow[] = [];
     for (const occ of plannerOccurrences) {
-      const relevant = parts.filter(p => p.recipeId === occ.recipeId && (p.day ? p.day === occ.day : true));
+      const relevant = parts.filter((p: any) => p.recipeId === occ.recipeId && (p.day ? p.day === occ.day : true));
       if (relevant.length === 0) continue;
 
       let qty = 0;
@@ -884,649 +1068,817 @@ const ShoppingListView: React.FC<ShoppingListViewProps> = ({
       if (qty === 0) continue;
 
       const cost = itemCost(item.ingredientKey, unit, qty);
-
       rows.push({ key: occ.key, day: occ.day, title: occ.title, quantity: qty, unit, cost });
     }
     return rows;
   };
 
-  const totalsCostSummary = useMemo(() => {
-    if (!showCosts) return { totalCost: null as number | null, priced: 0, total: 0, excludedPantry: 0 };
+  const pricedCoverageLabel =
+    mode === 'totals'
+      ? showCosts
+        ? totalsKnownSummary.missingCount === 0
+          ? 'All priced'
+          : `${Math.max(0, visibleTotals.length - totalsKnownSummary.missingCount)}/${visibleTotals.length} priced`
+        : 'Costs hidden'
+      : showCosts
+        ? 'Costs on'
+        : 'Costs hidden';
 
-    let sum = 0;
-    let priced = 0;
-    let total = 0;
-    let excludedPantry = 0;
-
-    for (const it of visibleTotals) {
-      total += 1;
-
-      if (excludePantryFromTotalsCost && isPantry(it.ingredientKey)) {
-        excludedPantry += 1;
-        continue;
-      }
-
-      const c = itemCost(it.ingredientKey, String(it.unit || ''), it.quantity);
-      if (c === null) continue;
-      priced += 1;
-      sum += c;
+  const onPriceInput = (ingredientKey: string, unitRaw: string, value: string) => {
+    const baseUnit = detectBaseUnitFromItemUnit(unitRaw);
+    const clean = value.trim();
+    if (!clean) {
+      setNormalizedPrice(ingredientKey, baseUnit, null);
+      return;
     }
+    const num = Number(clean.replace(',', '.'));
+    if (!Number.isFinite(num) || num < 0) return; // ignore invalid
+    setNormalizedPrice(ingredientKey, baseUnit, num);
+  };
 
-    const allPriced = priced === (total - excludedPantry);
-    return { totalCost: allPriced ? sum : null, priced, total, excludedPantry };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visibleTotals, showCosts, prices, excludePantryFromTotalsCost, pantrySet]);
+  const renderTotalsRow = (it: any) => {
+    const unit = String(it.unit || '');
+    const p = prettyAmount(Number(it.quantity || 0), unit);
+    const baseUnit = detectBaseUnitFromItemUnit(unit);
+    const price = getNormalizedPrice(it.ingredientKey, baseUnit);
+    const cost = showCosts ? itemCost(it.ingredientKey, unit, Number(it.quantity || 0)) : null;
 
-  const weeklyCostSummary = useMemo(() => {
-    if (!showCosts) return { totalCost: null as number | null, pricedRecipes: 0, totalRecipes: 0 };
+    const expanded = expandedItemIds.has(it.id);
 
-    let sum = 0;
-    let pricedRecipes = 0;
-    let totalRecipes = 0;
+return (
+  <div
+    key={it.id}
+    id={`item-${it.id}`}
+    data-itemid={it.id}
+    tabIndex={0}
+    onClick={e => {
+      // focus row when you click anywhere on it (but don't steal focus from inputs)
+      if ((e.target as HTMLElement)?.tagName?.toLowerCase() === 'input') return;
+      (e.currentTarget as HTMLDivElement).focus();
+    }}
+onKeyDown={e => {
+  // Route B light: only when the ROW has focus (not when typing in inputs)
+  if (e.key === ' ' || e.key === 'Spacebar') {
+    e.preventDefault(); // prevent page scroll
+    onToggleItem(it.id);
+    return;
+  }
 
-    for (const g of groups) {
-      if (g.rows.length === 0) continue;
-      totalRecipes += 1;
-      if (g.recipeCost === null) continue;
-      pricedRecipes += 1;
-      sum += g.recipeCost;
-    }
+  if (e.key === 'p' || e.key === 'P') {
+    e.preventDefault();
+    togglePantry(it.ingredientKey);
+    return;
+  }
 
-    const allPriced = pricedRecipes === totalRecipes;
-    return { totalCost: allPriced ? sum : null, pricedRecipes, totalRecipes };
-  }, [groups, showCosts]);
+if (e.key === 'f' || e.key === 'F') {
+  e.preventDefault();
 
-  const totalVisibleRowsByRecipe = groups.reduce((acc, g) => acc + g.rows.length, 0);
+  // Shift+F = focus next missing after current item
+  if (e.shiftKey) {
+    focusNextMissingAfter(it.id);
+    return;
+  }
 
-  return (
-    <section className="animate-fadeIn">
-      <div className="text-center mb-10">
-        <h2 className="text-4xl font-black mb-2">
-          Shopping <span className="text-pink-400">List</span>
-        </h2>
-        <p className="text-slate-400">
-          {mode === 'totals'
-            ? 'Shopping mode: totals (deduplicated). Aisles + pantry + normalized prices.'
-            : 'Cooking mode: grouped by recipe in planner order + recipe costs.'}
-        </p>
-      </div>
+  // F = focus this item's price input
+  const input = priceInputRefs.current[it.id];
+  if (input) {
+    input.focus();
+    input.select?.();
+  }
+  return;
+}
 
-      <div className="glass-panel p-6 rounded-3xl border-white/5 bg-slate-900/40">
-        {/* Header */}
-        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-white/10 pb-5 mb-6">
-          <div>
-            <p className="text-xs text-slate-500 font-bold uppercase tracking-widest">Status</p>
-            <p className="text-sm text-slate-300 font-semibold">
-              {items.length === 0
-                ? 'No items yet.'
-                : mode === 'totals'
-                ? `${items.length} items • ${checkedCount} checked • ${visibleTotals.length} shown`
-                : `${items.length} aggregated items • ${checkedCount} checked • ${totalVisibleRowsByRecipe} shown`}
-            </p>
+}}
 
-            {mode === 'totals' && !hasParts && items.length > 0 && (
-              <p className="text-[11px] text-amber-300/90 mt-2">
-                Tip: click <span className="font-bold">Generate (overwrite)</span> once to enable per-recipe breakdown.
-              </p>
-            )}
+    className={`rounded-2xl border overflow-hidden transition-colors outline-none focus:ring-2 focus:ring-pink-500/20 ${
+      highlightItemId === it.id
+        ? 'border-pink-500/40 bg-pink-500/[0.06]'
+        : it.checked
+          ? 'border-white/5 bg-white/[0.02]'
+          : 'border-white/10 bg-white/[0.03]'
+    }`}
+  >
 
-            {showCosts && items.length > 0 && (
-              <div className="mt-3 text-[12px] text-slate-400 space-y-1">
-                {mode === 'totals' ? (
-                  <div>
-                    <span className="font-bold text-slate-300">Totals cost:</span>{' '}
-                    {totalsCostSummary.totalCost === null
-                      ? `${totalsCostSummary.priced}/${Math.max(0, totalsCostSummary.total - totalsCostSummary.excludedPantry)} priced`
-                      : formatMoney(totalsCostSummary.totalCost)}
-                    {totalsCostSummary.excludedPantry > 0 && (
-                      <span className="text-slate-500"> (excluded pantry: {totalsCostSummary.excludedPantry})</span>
-                    )}
-                  </div>
-                ) : (
-                  <div>
-                    <span className="font-bold text-slate-300">Weekly cost:</span>{' '}
-                    {weeklyCostSummary.totalCost === null
-                      ? `${weeklyCostSummary.pricedRecipes}/${weeklyCostSummary.totalRecipes} recipes priced`
-                      : formatMoney(weeklyCostSummary.totalCost)}
+        <div className="p-3 md:p-4 flex items-start gap-3">
+          <button
+            onClick={() => onToggleItem(it.id)}
+            className={`mt-1 w-6 h-6 rounded-lg border grid place-items-center transition-all ${
+              it.checked
+                ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-200'
+                : 'bg-black/20 border-white/15 text-slate-400 hover:text-white'
+            }`}
+            title="Toggle checked"
+          >
+            <i className={`fa-solid ${it.checked ? 'fa-check' : 'fa-minus'} text-[10px]`}></i>
+          </button>
+
+          <div className="flex-1 min-w-0">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <p className={`font-black text-sm md:text-base truncate ${it.checked ? 'text-slate-500 line-through' : 'text-slate-100'}`}>
+                    {it.label}
+                  </p>
+
+                  <button
+                    onClick={() => togglePantry(it.ingredientKey)}
+                    className={`px-2 py-1 rounded-lg text-[10px] font-black uppercase border transition-all ${
+                      isPantry(it.ingredientKey)
+                        ? 'bg-cyan-500/15 border-cyan-400/30 text-cyan-200'
+                        : 'bg-white/5 border-white/10 text-slate-400 hover:text-white'
+                    }`}
+                    title="Mark as pantry"
+                  >
+                    <i className="fa-solid fa-box-archive mr-1"></i>
+                    Pantry
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      const current = getAisleForItem(it.ingredientKey, it.label);
+                      const idx = AISLES.indexOf(current);
+                      const next = AISLES[(idx + 1) % AISLES.length];
+                      setOverride(it.ingredientKey, next);
+                    }}
+                    className="hidden md:inline-flex px-2 py-1 rounded-lg text-[10px] font-black uppercase bg-white/5 border border-white/10 text-slate-400 hover:text-white transition-all"
+                    title="Cycle aisle"
+                  >
+                    <i className="fa-solid fa-store mr-1"></i>
+                    {getAisleForItem(it.ingredientKey, it.label)}
+                  </button>
+
+                  {aisleOverrides[it.ingredientKey] && (
+                    <button
+                      onClick={() => clearOverride(it.ingredientKey)}
+                      className="hidden md:inline-flex px-2 py-1 rounded-lg text-[10px] font-black uppercase bg-white/5 border border-white/10 text-slate-400 hover:text-white transition-all"
+                      title="Clear aisle override"
+                    >
+                      <i className="fa-solid fa-eraser mr-1"></i>
+                      Reset
+                    </button>
+                  )}
+                </div>
+
+                <p className="text-[11px] text-slate-400 mt-1">
+                  <span className="font-bold text-slate-300">{`${formatQty(p.qty)} ${p.unit}`.trim()}</span>
+                  {showCosts && (
+                    <>
+                      <span className="text-slate-600 mx-2">•</span>
+                      <span className={`${cost === null ? 'text-slate-500' : 'text-slate-300'}`}>{cost === null ? '€ —' : formatMoney(cost)}</span>
+                    </>
+                  )}
+                </p>
+              </div>
+
+              <div className="flex flex-col items-end gap-2 min-w-[140px]">
+                {showCosts && (
+                  <div className="w-full">
+                    <div className="flex items-center justify-between mb-1">
+                      <p className="text-[10px] uppercase font-black text-slate-500 tracking-widest">Price</p>
+                      <p className="text-[10px] font-black text-slate-500">{`€/ ${baseUnit}`}</p>
+                    </div>
+
+                    <input
+                      ref={el => {
+                        priceInputRefs.current[it.id] = el;
+                      }}
+                      className={`${field} text-sm`}
+                      placeholder={price === null ? '—' : String(price)}
+                      defaultValue={price === null ? '' : String(price)}
+                      inputMode="decimal"
+                      onFocus={e => {
+                        e.currentTarget.select();
+                        (e.currentTarget as HTMLInputElement).dataset.initial = e.currentTarget.value;
+                      }}
+                      onKeyDown={e => {
+                        const input = e.currentTarget as HTMLInputElement;
+
+                        if (e.key === 'Enter') {
+                          input.blur();
+                          window.setTimeout(() => {
+                            focusNextMissingAfter(it.id);
+                          }, 50);
+                        }
+
+                        if (e.key === 'Escape') {
+                          input.value = input.dataset.initial ?? '';
+                          input.blur();
+                        }
+                      }}
+                      onBlur={e => onPriceInput(it.ingredientKey, unit, e.currentTarget.value)}
+                    />
                   </div>
                 )}
+
+                {hasParts && (
+                  <button
+                    onClick={() => toggleExpanded(it.id)}
+                    className="text-[11px] font-bold text-slate-400 hover:text-white transition-all"
+                    title="Show breakdown"
+                  >
+                    <i className={`fa-solid ${expanded ? 'fa-chevron-up' : 'fa-chevron-down'} mr-2`}></i>
+                    Breakdown
+                  </button>
+                )}
               </div>
-            )}
-          </div>
-
-          <div className="flex flex-wrap gap-3">
-            <button
-              onClick={onGenerate}
-              className="px-5 py-2.5 rounded-2xl font-bold bg-pink-500 hover:bg-pink-400 text-white transition-all shadow-lg shadow-pink-900/20 flex items-center gap-2"
-              title="Overwrite list from planner"
-            >
-              <i className="fa-solid fa-wand-magic-sparkles"></i>
-              Generate (overwrite)
-            </button>
-
-            <button
-              onClick={onResetChecks}
-              className="px-5 py-2.5 rounded-2xl font-bold bg-white/10 hover:bg-white/15 text-slate-200 transition-all flex items-center gap-2"
-              disabled={items.length === 0}
-            >
-              <i className="fa-solid fa-rotate-left"></i>
-              Reset checks
-            </button>
-
-            <button
-              onClick={handleCopy}
-              className="px-5 py-2.5 rounded-2xl font-bold bg-white/10 hover:bg-white/15 text-slate-200 transition-all flex items-center gap-2"
-              disabled={items.length === 0}
-              title="Copy current view to clipboard"
-            >
-              <i className="fa-solid fa-copy"></i>
-              Copy
-            </button>
-
-            <button
-              onClick={handlePrint}
-              className="px-5 py-2.5 rounded-2xl font-bold bg-white/10 hover:bg-white/15 text-slate-200 transition-all flex items-center gap-2"
-              disabled={items.length === 0}
-              title="Print current view"
-            >
-              <i className="fa-solid fa-print"></i>
-              Print
-            </button>
-
-            <button
-              onClick={handleExportShoppingCsv}
-              className="px-5 py-2.5 rounded-2xl font-bold bg-white/10 hover:bg-white/15 text-slate-200 transition-all flex items-center gap-2"
-              disabled={visibleTotals.length === 0}
-              title="Export totals as CSV (includes normalized prices if set)"
-            >
-              <i className="fa-solid fa-file-csv"></i>
-              CSV
-            </button>
-
-            <button
-              onClick={handleExportPriceCsv}
-              className="px-5 py-2.5 rounded-2xl font-bold bg-white/10 hover:bg-white/15 text-slate-200 transition-all flex items-center gap-2"
-              disabled={Object.keys(prices).length === 0}
-              title="Export price book to CSV"
-            >
-              <i className="fa-solid fa-coins"></i>
-              Prices CSV
-            </button>
-
-            <label
-              className="px-5 py-2.5 rounded-2xl font-bold bg-white/10 hover:bg-white/15 text-slate-200 transition-all flex items-center gap-2 cursor-pointer"
-              title="Import price book CSV (ingredientKey,baseUnit,pricePerBaseUnit)"
-            >
-              <i className="fa-solid fa-file-import"></i>
-              Import Prices
-              <input
-                type="file"
-                accept=".csv,text/csv"
-                className="hidden"
-                onChange={e => {
-                  const f = e.target.files?.[0];
-                  if (!f) return;
-                  handleImportPriceCsv(f).finally(() => {
-                    e.currentTarget.value = '';
-                  });
-                }}
-              />
-            </label>
-
-            <button
-              onClick={() => {
-                if (confirm('Clear shopping list?')) onClear();
-              }}
-              className="px-5 py-2.5 rounded-2xl font-bold bg-white/10 hover:bg-red-500/20 text-slate-200 hover:text-red-300 transition-all flex items-center gap-2"
-              disabled={items.length === 0}
-            >
-              <i className="fa-solid fa-trash-can"></i>
-              Clear
-            </button>
+            </div>
           </div>
         </div>
 
-        {/* Presets + Controls */}
-        <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4 mb-6">
-          <div className="flex items-center gap-3 flex-wrap">
-            <div className="flex items-center gap-2 bg-white/5 p-1 rounded-2xl border border-white/10">
-              <button
-                onClick={applyShoppingPreset}
-                className={`px-4 py-2 rounded-2xl text-xs font-black uppercase tracking-widest transition-all ${
-                  mode === 'totals' && showOnlyUnchecked ? 'bg-pink-500 text-white' : 'text-slate-300 hover:text-white'
-                }`}
-                title="Totals + only unchecked + collapsed"
-              >
-                Shopping mode
-              </button>
-              <button
-                onClick={applyCookingPreset}
-                className={`px-4 py-2 rounded-2xl text-xs font-black uppercase tracking-widest transition-all ${
-                  mode === 'by_recipe' ? 'bg-cyan-500 text-white' : 'text-slate-300 hover:text-white'
-                }`}
-                title="Grouped by recipe in planner order"
-              >
-                Cooking mode
-              </button>
-            </div>
-
-            <div className="flex items-center gap-2 bg-white/5 p-1 rounded-2xl border border-white/10">
-              <button
-                onClick={() => setMode('totals')}
-                className={`px-4 py-2 rounded-2xl text-xs font-black uppercase tracking-widest transition-all ${
-                  mode === 'totals' ? 'bg-white/15 text-white' : 'text-slate-300 hover:text-white'
-                }`}
-              >
-                Totals
-              </button>
-              <button
-                onClick={() => setMode('by_recipe')}
-                className={`px-4 py-2 rounded-2xl text-xs font-black uppercase tracking-widest transition-all ${
-                  mode === 'by_recipe' ? 'bg-white/15 text-white' : 'text-slate-300 hover:text-white'
-                }`}
-              >
-                By recipe
-              </button>
-            </div>
-
-            <label className="flex items-center gap-3 text-sm text-slate-300">
-              <input
-                type="checkbox"
-                checked={showOnlyUnchecked}
-                onChange={e => setShowOnlyUnchecked(e.target.checked)}
-                className="rounded border-white/20 bg-slate-800 text-pink-500 focus:ring-pink-500/20 w-5 h-5 cursor-pointer"
-              />
-              Only show unchecked
-            </label>
-
-            <label className="flex items-center gap-3 text-sm text-slate-300">
-              <input
-                type="checkbox"
-                checked={showCosts}
-                onChange={e => setShowCosts(e.target.checked)}
-                className="rounded border-white/20 bg-slate-800 text-pink-500 focus:ring-pink-500/20 w-5 h-5 cursor-pointer"
-              />
-              Show costs
-            </label>
-
-            {mode === 'totals' && (
-              <>
-                <label className="flex items-center gap-3 text-sm text-slate-300">
-                  <input
-                    type="checkbox"
-                    checked={groupByAisle}
-                    onChange={e => setGroupByAisle(e.target.checked)}
-                    className="rounded border-white/20 bg-slate-800 text-pink-500 focus:ring-pink-500/20 w-5 h-5 cursor-pointer"
-                  />
-                  Group by aisle
-                </label>
-
-                <label className="flex items-center gap-3 text-sm text-slate-300">
-                  <input
-                    type="checkbox"
-                    checked={hidePantry}
-                    onChange={e => setHidePantry(e.target.checked)}
-                    className="rounded border-white/20 bg-slate-800 text-pink-500 focus:ring-pink-500/20 w-5 h-5 cursor-pointer"
-                  />
-                  Hide pantry
-                </label>
-
-                <label className="flex items-center gap-3 text-sm text-slate-300">
-                  <input
-                    type="checkbox"
-                    checked={excludePantryFromTotalsCost}
-                    onChange={e => setExcludePantryFromTotalsCost(e.target.checked)}
-                    className="rounded border-white/20 bg-slate-800 text-pink-500 focus:ring-pink-500/20 w-5 h-5 cursor-pointer"
-                  />
-                  Exclude pantry from totals cost
-                </label>
-              </>
-            )}
-          </div>
-
-          {mode === 'totals' && (
-            <div className="flex items-center gap-3 flex-wrap">
-              <label className="flex items-center gap-3 text-sm text-slate-300">
-                <input
-                  type="checkbox"
-                  checked={autoExpandUnchecked}
-                  onChange={e => setAutoExpandUnchecked(e.target.checked)}
-                  className="rounded border-white/20 bg-slate-800 text-pink-500 focus:ring-pink-500/20 w-5 h-5 cursor-pointer"
-                />
-                Auto-expand unchecked
-              </label>
-
-              <button
-                onClick={expandAllVisible}
-                className="px-3 py-2 rounded-xl text-xs font-bold bg-white/10 hover:bg-white/15 text-slate-200 transition-all"
-                disabled={visibleTotals.length === 0}
-                title="Expand all visible items"
-              >
-                Expand all
-              </button>
-              <button
-                onClick={collapseAll}
-                className="px-3 py-2 rounded-xl text-xs font-bold bg-white/10 hover:bg-white/15 text-slate-200 transition-all"
-                disabled={visibleTotals.length === 0}
-                title="Collapse all items"
-              >
-                Collapse all
-              </button>
-            </div>
-          )}
-        </div>
-
-        {/* Content */}
-        {items.length === 0 ? (
-          <div className="text-center py-20 border-2 border-dashed border-white/5 rounded-3xl">
-            <i className="fa-solid fa-basket-shopping text-4xl text-slate-700 mb-4"></i>
-            <p className="text-slate-500 font-medium">Generate your list from the Planner.</p>
-          </div>
-        ) : mode === 'totals' ? (
-          visibleTotals.length === 0 ? (
-            <div className="text-center py-20 border-2 border-dashed border-white/5 rounded-3xl">
-              <i className="fa-solid fa-check text-4xl text-slate-700 mb-4"></i>
-              <p className="text-slate-500 font-medium">Nothing to buy (given your filters) 🎉</p>
-            </div>
-          ) : (
-            <div className="space-y-5">
-              {(groupByAisle ? AISLES : (['__ALL__'] as any)).map((aisle: Aisle | '__ALL__') => {
-                const list =
-                  aisle === '__ALL__'
-                    ? visibleTotals.slice().sort((a, b) => a.label.localeCompare(b.label))
-                    : totalsByAisle.get(aisle as Aisle) || [];
-                if (list.length === 0) return null;
-
+        {hasParts && expanded && (
+          <div className="border-t border-white/10 bg-black/20 p-3 md:p-4">
+            <p className="text-[10px] uppercase font-black text-slate-500 tracking-widest mb-3">Contributions</p>
+            <div className="space-y-2">
+              {getContributionsForItem(it.id).map(row => {
+                const pp = prettyAmount(row.quantity, row.unit);
+                const c = showCosts ? row.cost : null;
                 return (
-                  <div key={String(aisle)} className="rounded-3xl border border-white/10 bg-slate-950/30 overflow-hidden">
-                    <div className="px-5 py-4 border-b border-white/10 flex items-center justify-between gap-4">
-                      <div className="min-w-0">
-                        <p className="text-[10px] text-slate-500 uppercase tracking-widest font-bold">
-                          {aisle === '__ALL__' ? 'All items' : aisle}
-                        </p>
-                        <h3 className="font-black text-slate-100 truncate">{aisle === '__ALL__' ? 'Totals' : `${aisle}`}</h3>
-                      </div>
-                      <div className="text-xs text-slate-500 font-bold flex-shrink-0">
-                        {list.length} item{list.length === 1 ? '' : 's'}
-                      </div>
+                  <div key={row.key} className="flex items-center justify-between gap-3 bg-white/5 border border-white/10 rounded-xl px-3 py-2">
+                    <div className="min-w-0">
+                      <p className="text-[12px] font-bold truncate">
+                        {row.title} <span className="text-slate-500 font-black">({dayShort(row.day)})</span>
+                      </p>
+                      <p className="text-[11px] text-slate-400">{`${formatQty(pp.qty)} ${pp.unit}`.trim()}</p>
                     </div>
-
-                    <div className="p-4 space-y-3">
-                      {list.map(item => {
-                        const p = prettyAmount(item.quantity, String(item.unit || ''));
-                        const amount = `${formatQty(p.qty)} ${p.unit}`.trim();
-                        const expanded = expandedItemIds.has(item.id);
-
-                        const sources = item.sources || [];
-                        const aisleEffective = getAisleForItem(item.ingredientKey, item.label);
-                        const overridden = aisleOverrides[item.ingredientKey] !== undefined;
-                        const pantry = isPantry(item.ingredientKey);
-
-                        const unit = String(item.unit || '');
-                        const baseUnit = detectBaseUnitFromItemUnit(unit);
-                        const pricePerBase = getNormalizedPrice(item.ingredientKey, baseUnit);
-                        const c = showCosts ? itemCost(item.ingredientKey, unit, item.quantity) : null;
-
-                        const contributions = expanded && hasParts ? getContributionsForItem(item.id) : [];
-
-                        return (
-                          <div
-                            key={item.id}
-                            className={`rounded-2xl border transition-all overflow-hidden ${
-                              item.checked
-                                ? 'bg-emerald-500/5 border-emerald-500/20 opacity-90'
-                                : 'bg-slate-950/40 border-white/5 hover:border-pink-500/20'
-                            }`}
-                          >
-                            <div className="p-4">
-                              <div className="flex items-center justify-between gap-4">
-                                <div className="flex items-center gap-4 min-w-0">
-                                  <input
-                                    type="checkbox"
-                                    checked={item.checked}
-                                    onChange={() => onToggleItem(item.id)}
-                                    className="rounded border-white/20 bg-slate-800 text-pink-500 focus:ring-pink-500/20 w-5 h-5 cursor-pointer"
-                                  />
-
-                                  <button
-                                    onClick={() => toggleExpanded(item.id)}
-                                    className="text-left min-w-0 flex items-center gap-3 group"
-                                    title={expanded ? 'Hide details' : 'Show details'}
-                                  >
-                                    <i
-                                      className={`fa-solid ${
-                                        expanded ? 'fa-chevron-down' : 'fa-chevron-right'
-                                      } text-slate-500 group-hover:text-slate-200 transition-colors`}
-                                    ></i>
-
-                                    <div className="min-w-0">
-                                      <p
-                                        className={`font-bold truncate ${
-                                          item.checked ? 'text-emerald-200 line-through' : 'text-slate-100'
-                                        }`}
-                                      >
-                                        {item.label}
-                                      </p>
-                                      <p className="text-[10px] text-slate-500 uppercase tracking-widest font-bold flex gap-2 flex-wrap">
-                                        <span>{sources.length} source{sources.length === 1 ? '' : 's'}</span>
-                                        <span>•</span>
-                                        <span>{aisleEffective}</span>
-                                        {pantry && (
-                                          <>
-                                            <span>•</span>
-                                            <span className="text-amber-300/90">Pantry</span>
-                                          </>
-                                        )}
-                                        {overridden && (
-                                          <>
-                                            <span>•</span>
-                                            <span className="text-cyan-300/90">Override</span>
-                                          </>
-                                        )}
-                                      </p>
-                                    </div>
-                                  </button>
-                                </div>
-
-                                <div className="text-right flex-shrink-0">
-                                  <p className="font-black text-slate-200">{amount}</p>
-                                  {showCosts && <p className="text-xs text-slate-400 font-bold">{c === null ? '€ —' : formatMoney(c)}</p>}
-                                </div>
-                              </div>
-
-                              <div className="mt-3 flex flex-wrap gap-2 items-center">
-                                <button
-                                  onClick={() => togglePantry(item.ingredientKey)}
-                                  className={`px-3 py-2 rounded-xl text-xs font-bold transition-all ${
-                                    pantry ? 'bg-amber-500/20 text-amber-200' : 'bg-white/10 hover:bg-white/15 text-slate-200'
-                                  }`}
-                                  title="Mark as pantry item (already have it)"
-                                >
-                                  <i className={`fa-solid ${pantry ? 'fa-box' : 'fa-box-open'} mr-2`}></i>
-                                  Pantry
-                                </button>
-
-                                <div className="flex items-center gap-2 bg-white/5 p-1 rounded-xl border border-white/10">
-                                  <span className="text-[10px] uppercase font-black tracking-widest text-slate-500 ml-2">Aisle</span>
-                                  <select
-                                    value={aisleEffective}
-                                    onChange={e => setOverride(item.ingredientKey, e.target.value as Aisle)}
-                                    className="bg-transparent text-slate-200 text-xs font-bold px-2 py-1 outline-none"
-                                    title="Override aisle for this ingredient"
-                                  >
-                                    {AISLES.map(a => (
-                                      <option key={a} value={a}>
-                                        {a}
-                                      </option>
-                                    ))}
-                                  </select>
-
-                                  <button
-                                    onClick={() => clearOverride(item.ingredientKey)}
-                                    className="px-2 py-1 rounded-lg text-xs font-bold bg-white/10 hover:bg-white/15 text-slate-200 transition-all"
-                                    disabled={!overridden}
-                                    title="Clear override"
-                                  >
-                                    Reset
-                                  </button>
-                                </div>
-
-                                {showCosts && (
-                                  <div className="flex items-center gap-2 bg-white/5 p-1 rounded-xl border border-white/10">
-                                    <span className="text-[10px] uppercase font-black tracking-widest text-slate-500 ml-2">Price</span>
-
-                                    <input
-                                      type="number"
-                                      inputMode="decimal"
-                                      step="0.01"
-                                      min="0"
-                                      placeholder={`€ / ${baseUnit}`}
-                                      value={pricePerBase === null ? '' : String(pricePerBase)}
-                                      onChange={e => {
-                                        const v = e.target.value;
-                                        if (v.trim() === '') {
-                                          setNormalizedPrice(item.ingredientKey, baseUnit, null);
-                                          return;
-                                        }
-                                        const n = Number(v);
-                                        if (!Number.isFinite(n) || n < 0) return;
-                                        setNormalizedPrice(item.ingredientKey, baseUnit, n);
-                                      }}
-                                      className="bg-transparent text-slate-200 text-xs font-bold px-2 py-1 outline-none w-28"
-                                      title={`Price per ${baseUnit} (stored locally, normalized)`}
-                                    />
-
-                                    <span className="text-xs text-slate-500 font-bold mr-2">{`€/${baseUnit}`}</span>
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-
-                            {expanded && (
-                              <div className="px-4 pb-4">
-                                {hasParts ? (
-                                  contributions.length === 0 ? (
-                                    <div className="mt-2 text-[11px] text-slate-500">No per-recipe contributions found.</div>
-                                  ) : (
-                                    <div className="mt-3 pt-3 border-t border-white/10">
-                                      <p className="text-[10px] text-slate-500 uppercase tracking-widest font-bold mb-2">
-                                        Per recipe (planner order)
-                                      </p>
-                                      <div className="flex flex-col gap-2">
-                                        {contributions.map((cRow, idx) => {
-                                          const pp = prettyAmount(cRow.quantity, cRow.unit);
-                                          const aa = `${formatQty(pp.qty)} ${pp.unit}`.trim();
-                                          const costStr =
-                                            showCosts && cRow.cost !== null ? formatMoney(cRow.cost) : showCosts ? '€ —' : '';
-
-                                          return (
-                                            <div
-                                              key={`${item.id}-c-${cRow.key}-${idx}`}
-                                              className="text-xs text-slate-300 flex items-center justify-between gap-4 bg-white/5 border border-white/10 rounded-xl px-3 py-2"
-                                            >
-                                              <span className="truncate">{cRow.title}</span>
-                                              <div className="flex items-center gap-3 flex-shrink-0">
-                                                <span className="text-slate-500 font-bold">{dayShort(cRow.day) || '—'}</span>
-                                                <span className="text-slate-200 font-black">{aa}</span>
-                                                {showCosts && <span className="text-slate-300 font-black">{costStr}</span>}
-                                              </div>
-                                            </div>
-                                          );
-                                        })}
-                                      </div>
-                                    </div>
-                                  )
-                                ) : (
-                                  <div className="mt-3 pt-3 border-t border-white/10">
-                                    <p className="text-[11px] text-slate-500">
-                                      This list has no breakdown yet. Click <span className="font-bold">Generate (overwrite)</span> once.
-                                    </p>
-                                  </div>
-                                )}
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
+                    {showCosts && <p className="text-[12px] font-black text-slate-200">{c === null ? '€ —' : formatMoney(c)}</p>}
                   </div>
                 );
               })}
+              {getContributionsForItem(it.id).length === 0 && <p className="text-slate-500 text-sm">No breakdown available for this item.</p>}
             </div>
-          )
-        ) : (
-          <div className="space-y-5">
-            {groups.map(group => {
-              if (group.rows.length === 0) return null;
-
-              const costLabel =
-                showCosts && group.pricedCoverage.total > 0
-                  ? group.recipeCost === null
-                    ? `${group.pricedCoverage.priced}/${group.pricedCoverage.total} priced`
-                    : formatMoney(group.recipeCost)
-                  : null;
-
-              return (
-                <div key={group.key} className="rounded-3xl border border-white/10 bg-slate-950/30 overflow-hidden">
-                  <div className="px-5 py-4 border-b border-white/10 flex items-center justify-between gap-4">
-                    <div className="min-w-0">
-                      <p className="text-[10px] text-slate-500 uppercase tracking-widest font-bold">{dayShort(group.day)}</p>
-                      <h3 className="font-black text-slate-100 truncate">{group.title}</h3>
-                      {showCosts && <p className="text-xs text-slate-400 font-bold mt-1">Recipe cost: {costLabel ?? '—'}</p>}
-                    </div>
-                    <div className="text-xs text-slate-500 font-bold flex-shrink-0">
-                      {group.rows.length} item{group.rows.length === 1 ? '' : 's'}
-                    </div>
-                  </div>
-
-                  <div className="p-4 space-y-2">
-                    {group.rows.map(row => {
-                      const pp = prettyAmount(row.quantity, row.unit);
-                      const amount = `${formatQty(pp.qty)} ${pp.unit}`.trim();
-                      const costStr = showCosts ? (row.cost === null ? '€ —' : formatMoney(row.cost)) : '';
-
-                      return (
-                        <div
-                          key={`${group.key}-${row.itemId}-${row.unit}`}
-                          className={`flex items-center justify-between gap-4 p-3 rounded-2xl border transition-all ${
-                            row.checked
-                              ? 'bg-emerald-500/5 border-emerald-500/20 opacity-80'
-                              : 'bg-slate-950/40 border-white/5 hover:border-pink-500/20'
-                          }`}
-                        >
-                          <div className="flex items-center gap-4 min-w-0">
-                            <input
-                              type="checkbox"
-                              checked={row.checked}
-                              onChange={() => onToggleItem(row.itemId)}
-                              className="rounded border-white/20 bg-slate-800 text-pink-500 focus:ring-pink-500/20 w-5 h-5 cursor-pointer"
-                            />
-                            <p className={`font-bold truncate ${row.checked ? 'text-emerald-200 line-through' : 'text-slate-100'}`}>
-                              {row.label}
-                            </p>
-                          </div>
-
-                          <div className="text-right flex-shrink-0">
-                            <p className="font-black text-slate-200">{amount}</p>
-                            {showCosts && <p className="text-xs text-slate-400 font-bold">{costStr}</p>}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-
-        {shoppingList && (
-          <div className="mt-8 text-[10px] text-slate-600 flex flex-wrap gap-3 justify-between">
-            <span>List ID: {shoppingList.id}</span>
-            <span>Updated: {new Date(shoppingList.updatedAt).toLocaleString()}</span>
           </div>
         )}
       </div>
+    );
+  };
+
+  const renderTotals = () => {
+    if (!shoppingList || items.length === 0) {
+      return (
+        <div className="text-center py-20 glass-panel rounded-3xl border-dashed border-2 border-white/5">
+          <i className="fa-solid fa-basket-shopping text-4xl text-slate-700 mb-4"></i>
+          <p className="text-slate-500">No shopping list yet. Generate one from your planner.</p>
+          <div className="mt-6 flex justify-center">
+            <button
+              onClick={onGenerate}
+              className="px-6 py-3 rounded-2xl font-black bg-pink-500 hover:bg-pink-400 text-white transition-all shadow-xl shadow-pink-900/20 flex items-center gap-3"
+            >
+              <i className="fa-solid fa-wand-magic-sparkles"></i>
+              Generate from Planner
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    if (!groupByAisle) {
+      return <div className="space-y-3">{visibleTotals.map(renderTotalsRow)}</div>;
+    }
+
+    return (
+      <div className="space-y-8">
+        {AISLES.map(aisle => {
+          const rows = totalsByAisle.get(aisle) || [];
+          if (rows.length === 0) return null;
+
+          const st = aisleStats.get(aisle)!;
+
+          const isCollapsed = (collapseCompleteAisles && showCosts && st.complete) || collapsedAisles.has(aisle);
+
+          const toggleCollapse = () => {
+            setCollapsedAisles(prev => {
+              const next = new Set(prev);
+              if (next.has(aisle)) next.delete(aisle);
+              else next.add(aisle);
+              return next;
+            });
+          };
+
+          const jumpAisleMissing = () => {
+            if (!st.firstMissingItemId) return;
+            focusItemPrice(st.firstMissingItemId);
+          };
+
+          // Route A: always show known subtotal (even if incomplete)
+          const subtotalLabel = showCosts ? formatMoney(st.subtotalKnown) : '—';
+
+          return (
+            <div key={aisle}>
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-3">
+                  <p className="text-[10px] uppercase font-black text-slate-500 tracking-widest flex items-center gap-2">
+                    <span
+                      className={`inline-flex items-center justify-center w-5 h-5 rounded-lg border ${
+                        showCosts
+                          ? st.complete
+                            ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200'
+                            : 'border-white/10 bg-white/5 text-slate-400'
+                          : 'border-white/10 bg-white/5 text-slate-400'
+                      }`}
+                      title={showCosts ? (st.complete ? 'Complete' : 'Incomplete') : 'Costs hidden'}
+                    >
+                      <i className={`fa-solid ${showCosts ? (st.complete ? 'fa-check' : 'fa-circle-dot') : 'fa-circle'} text-[10px]`}></i>
+                    </span>
+                    {aisle}
+                  </p>
+
+                  <span className="text-[10px] font-black text-slate-600">{rows.length} items</span>
+
+                  {showCosts && (
+                    <>
+                      <span className={`text-[10px] font-black ${st.complete ? 'text-slate-300' : 'text-slate-500'}`}>
+                        {st.complete ? 'Total:' : 'Known:'} {subtotalLabel}
+                      </span>
+
+                      {st.missingPrices > 0 && (
+                        <button
+                          type="button"
+                          onClick={jumpAisleMissing}
+                          className="text-[10px] font-black text-slate-500 hover:text-white underline underline-offset-4"
+                          title="Jump to first missing price in this aisle"
+                        >
+                          Missing: {st.missingPrices}
+                        </button>
+                      )}
+                    </>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={toggleCollapse}
+                    className="px-3 py-1 rounded-xl text-[10px] font-black uppercase bg-white/5 border border-white/10 text-slate-400 hover:text-white hover:bg-white/10 transition-all"
+                    title={isCollapsed ? 'Expand aisle' : 'Collapse aisle'}
+                  >
+                    <i className={`fa-solid ${isCollapsed ? 'fa-chevron-down' : 'fa-chevron-up'} mr-2`}></i>
+                    {isCollapsed ? 'Expand' : 'Collapse'}
+                  </button>
+                </div>
+              </div>
+
+              {!isCollapsed && <div className="space-y-3">{rows.map(renderTotalsRow)}</div>}
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+
+  const renderByRecipe = () => {
+    if (!shoppingList || items.length === 0) {
+      return (
+        <div className="text-center py-20 glass-panel rounded-3xl border-dashed border-2 border-white/5">
+          <i className="fa-solid fa-bowl-food text-4xl text-slate-700 mb-4"></i>
+          <p className="text-slate-500">No shopping list yet. Generate one first.</p>
+          <div className="mt-6 flex justify-center">
+            <button
+              onClick={onGenerate}
+              className="px-6 py-3 rounded-2xl font-black bg-pink-500 hover:bg-pink-400 text-white transition-all shadow-xl shadow-pink-900/20 flex items-center gap-3"
+            >
+              <i className="fa-solid fa-wand-magic-sparkles"></i>
+              Generate from Planner
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    if (groups.length === 0) {
+      return (
+        <div className="text-center py-14 glass-panel rounded-3xl border border-white/10">
+          <p className="text-slate-500">No planner meals found for this list.</p>
+        </div>
+      );
+    }
+
+    return (
+      <div className="space-y-6">
+        {groups.map(g => {
+          if (g.rows.length === 0) return null;
+
+          const costLabel =
+            showCosts && g.pricedCoverage.total > 0
+              ? g.recipeCost === null
+                ? `${g.pricedCoverage.priced}/${g.pricedCoverage.total} priced`
+                : formatMoney(g.recipeCost)
+              : null;
+
+          return (
+            <div key={g.key} className="rounded-3xl border border-white/10 bg-white/[0.03] overflow-hidden">
+              <div className="p-4 md:p-5 flex items-center justify-between gap-4 border-b border-white/10">
+                <div className="min-w-0">
+                  <p className="font-black text-lg truncate">
+                    {g.title} <span className="text-slate-500 font-black">({dayShort(g.day)})</span>
+                  </p>
+                  <p className="text-[11px] text-slate-500 mt-1">
+                    {g.rows.length} items
+                    {showCosts && (
+                      <>
+                        <span className="text-slate-600 mx-2">•</span>
+                        <span className="text-slate-300 font-bold">{costLabel ?? '€ —'}</span>
+                      </>
+                    )}
+                  </p>
+                </div>
+
+                <button
+                  onClick={() => {
+                    const ids = g.rows.map(r => r.itemId);
+                    setExpandedItemIds(prev => {
+                      const next = new Set(prev);
+                      const allExpanded = ids.every(id => next.has(id));
+                      if (allExpanded) ids.forEach(id => next.delete(id));
+                      else ids.forEach(id => next.add(id));
+                      return next;
+                    });
+                  }}
+                  className={smallBtn}
+                >
+                  Toggle breakdown
+                </button>
+              </div>
+
+              <div className="p-4 md:p-5 space-y-3">
+                {g.rows.map(r => {
+                  const pp = prettyAmount(r.quantity, r.unit);
+                  return (
+                    <div key={`${g.key}-${r.itemId}-${r.unit}`} className="rounded-2xl border border-white/10 bg-black/20 p-3 md:p-4">
+                      <div className="flex items-start gap-3">
+                        <button
+                          onClick={() => onToggleItem(r.itemId)}
+                          className={`mt-1 w-6 h-6 rounded-lg border grid place-items-center transition-all ${
+                            r.checked
+                              ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-200'
+                              : 'bg-black/20 border-white/15 text-slate-400 hover:text-white'
+                          }`}
+                          title="Toggle checked"
+                        >
+                          <i className={`fa-solid ${r.checked ? 'fa-check' : 'fa-minus'} text-[10px]`}></i>
+                        </button>
+
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="min-w-0">
+                              <p className={`font-black truncate ${r.checked ? 'text-slate-500 line-through' : 'text-slate-100'}`}>{r.label}</p>
+                              <p className="text-[11px] text-slate-400 mt-1">
+                                <span className="font-bold text-slate-300">{`${formatQty(pp.qty)} ${pp.unit}`.trim()}</span>
+                                {showCosts && (
+                                  <>
+                                    <span className="text-slate-600 mx-2">•</span>
+                                    <span className={`${r.cost === null ? 'text-slate-500' : 'text-slate-300'}`}>{r.cost === null ? '€ —' : formatMoney(r.cost)}</span>
+                                  </>
+                                )}
+                              </p>
+                            </div>
+
+                            {hasParts && (
+                              <button
+                                onClick={() => toggleExpanded(r.itemId)}
+                                className="text-[11px] font-bold text-slate-400 hover:text-white transition-all"
+                              >
+                                <i className={`fa-solid ${expandedItemIds.has(r.itemId) ? 'fa-chevron-up' : 'fa-chevron-down'} mr-2`}></i>
+                                Breakdown
+                              </button>
+                            )}
+                          </div>
+
+                          {hasParts && expandedItemIds.has(r.itemId) && (
+                            <div className="mt-3 pt-3 border-t border-white/10">
+                              <p className="text-[10px] uppercase font-black text-slate-500 tracking-widest mb-2">Contributions</p>
+                              <div className="space-y-2">
+                                {getContributionsForItem(r.itemId).map(row => {
+                                  const ppp = prettyAmount(row.quantity, row.unit);
+                                  return (
+                                    <div key={row.key} className="flex items-center justify-between gap-3 bg-white/5 border border-white/10 rounded-xl px-3 py-2">
+                                      <div className="min-w-0">
+                                        <p className="text-[12px] font-bold truncate">
+                                          {row.title} <span className="text-slate-500 font-black">({dayShort(row.day)})</span>
+                                        </p>
+                                        <p className="text-[11px] text-slate-400">{`${formatQty(ppp.qty)} ${ppp.unit}`.trim()}</p>
+                                      </div>
+                                      {showCosts && <p className="text-[12px] font-black text-slate-200">{row.cost === null ? '€ —' : formatMoney(row.cost)}</p>}
+                                    </div>
+                                  );
+                                })}
+                                {getContributionsForItem(r.itemId).length === 0 && (
+                                  <p className="text-slate-500 text-sm">No breakdown available for this item.</p>
+                                )}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+
+  const renderCleanupPanel = () => {
+    if (!cleanupOpen) return null;
+
+    return (
+      <div className="fixed inset-0 z-[120] bg-black/80 backdrop-blur-sm flex items-center justify-center p-6">
+        <div className="glass-panel w-full max-w-4xl rounded-3xl max-h-[85vh] flex flex-col overflow-hidden shadow-2xl border-pink-500/20 bg-slate-950">
+          <div className="p-5 border-b border-white/10 flex justify-between items-center bg-slate-900">
+            <div>
+              <p className="font-black text-lg">Cleanup</p>
+              <p className="text-[11px] text-slate-500 mt-1">Quick actions for missing prices & pantry. (Totals view uses normalized prices per base unit.)</p>
+            </div>
+            <button onClick={() => setCleanupOpen(false)} className={iconBtn} title="Close">
+              <i className="fa-solid fa-xmark"></i>
+            </button>
+          </div>
+
+          <div className="flex-1 overflow-y-auto p-5 space-y-6">
+            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+              <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+                <div>
+                  <p className="font-black">Missing prices</p>
+                  <p className="text-[11px] text-slate-500">Set €/kg, €/l or €/pcs inline. Leaving blank removes stored price.</p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    className={smallBtn}
+                    onClick={() => {
+                      const keys = missingItemIds
+                        .map(id => (visibleTotals as any[]).find(i => i.id === id)?.ingredientKey)
+                        .filter(Boolean) as string[];
+                      setPantrySet(prev => new Set([...Array.from(prev), ...keys]));
+                    }}
+                  >
+                    Mark all as pantry
+                  </button>
+                  <button
+                    className={smallBtn}
+                    onClick={() => {
+                      const keys = missingItemIds
+                        .map(id => (visibleTotals as any[]).find(i => i.id === id)?.ingredientKey)
+                        .filter(Boolean) as string[];
+                      setPantrySet(prev => {
+                        const next = new Set(prev);
+                        keys.forEach(k => next.delete(k));
+                        return next;
+                      });
+                    }}
+                  >
+                    Unmark pantry
+                  </button>
+                </div>
+              </div>
+
+              <div className="mt-4 space-y-3">
+                {!showCosts ? (
+                  <p className="text-slate-500">Costs are off.</p>
+                ) : missingItemIds.length === 0 ? (
+                  <p className="text-slate-500">No missing prices 🎉</p>
+                ) : (
+                  missingItemIds.map(id => {
+                    const it = (visibleTotals as any[]).find(i => i.id === id);
+                    if (!it) return null;
+
+                    const unit = String(it.unit || '');
+                    const baseUnit = detectBaseUnitFromItemUnit(unit);
+
+                    return (
+                      <div key={`cleanup-${it.id}`} className="flex flex-col md:flex-row md:items-center gap-3 border border-white/10 bg-black/20 rounded-2xl p-3">
+                        <div className="flex-1 min-w-0">
+                          <p className="font-black truncate">{it.label}</p>
+                          <p className="text-[11px] text-slate-500 mt-1">
+                            Amount:{' '}
+                            <span className="text-slate-300 font-bold">{`${formatQty(prettyAmount(it.quantity, unit).qty)} ${prettyAmount(it.quantity, unit).unit}`}</span>
+                            <span className="text-slate-600 mx-2">•</span>
+                            Base: <span className="text-slate-300 font-bold">{baseUnit}</span>
+                          </p>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => togglePantry(it.ingredientKey)}
+                            className={`px-3 py-2 rounded-xl text-[11px] font-black border transition-all ${
+                              isPantry(it.ingredientKey)
+                                ? 'bg-cyan-500/15 border-cyan-400/30 text-cyan-200'
+                                : 'bg-white/5 border-white/10 text-slate-400 hover:text-white'
+                            }`}
+                          >
+                            <i className="fa-solid fa-box-archive mr-2"></i>
+                            Pantry
+                          </button>
+
+                          <div className="w-[160px]">
+                            <input
+                              className={field}
+                              placeholder={`€/ ${baseUnit}`}
+                              onBlur={e => onPriceInput(it.ingredientKey, unit, e.currentTarget.value)}
+                              inputMode="decimal"
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+              <p className="font-black">Export / Import</p>
+              <p className="text-[11px] text-slate-500 mt-1">Useful to fill prices in a sheet and import back.</p>
+
+              <div className="mt-4 flex flex-wrap gap-2">
+                <button className={smallBtn} onClick={handleExportShoppingCsv}>
+                  <i className="fa-solid fa-file-csv mr-2"></i> Export Shopping CSV
+                </button>
+                <button className={smallBtn} onClick={handleExportPriceCsv}>
+                  <i className="fa-solid fa-download mr-2"></i> Export Prices CSV
+                </button>
+
+                <label className={`${smallBtn} cursor-pointer`}>
+                  <i className="fa-solid fa-upload mr-2"></i> Import Prices CSV
+                  <input
+                    type="file"
+                    accept=".csv,text/csv"
+                    className="hidden"
+                    onChange={e => {
+                      const f = e.target.files?.[0];
+                      if (!f) return;
+                      handleImportPriceCsv(f);
+                      e.currentTarget.value = '';
+                    }}
+                  />
+                </label>
+              </div>
+            </div>
+          </div>
+
+          <div className="p-4 border-t border-white/10 bg-slate-900 flex items-center justify-between gap-3">
+            <p className="text-[11px] text-slate-500">Tip: in Totals view, fill prices while shopping. Next week, costs are already there.</p>
+            <button
+              onClick={() => setCleanupOpen(false)}
+              className="px-5 py-2 rounded-2xl font-black bg-pink-500 hover:bg-pink-400 text-white transition-all"
+            >
+              Done
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <section className="animate-fadeIn">
+      <div ref={listTopRef} className="text-center mb-10">
+        <h2 className="text-4xl font-black mb-2">
+          Shopping <span className="text-pink-400">List</span>
+        </h2>
+        <p className="text-slate-400">Shopping mode = fast checklist + inline prices. Cooking mode = per recipe breakdown.</p>
+      </div>
+
+      {/* Sticky summary / actions */}
+      <div className="sticky top-0 z-[50] -mx-6 px-6 py-4 bg-slate-950/80 backdrop-blur-xl border-b border-white/10 mb-6">
+        <div className="container mx-auto">
+          <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="flex items-center gap-2 bg-white/5 p-1 rounded-xl border border-white/10">
+                <button onClick={applyShoppingPreset} className={pillBtn(mode === 'totals')}>
+                  Shopping
+                </button>
+                <button onClick={applyCookingPreset} className={pillBtn(mode === 'by_recipe')}>
+                  Cooking
+                </button>
+              </div>
+
+              <div className="flex items-center gap-2 bg-white/5 p-1 rounded-xl border border-white/10">
+                <span className="text-[10px] uppercase font-black text-slate-500 ml-2 mr-1">Filters</span>
+                <button onClick={() => setShowOnlyUnchecked(v => !v)} className={pillBtn(showOnlyUnchecked)}>
+                  {showOnlyUnchecked ? 'Unchecked only' : 'Show all'}
+                </button>
+                <button onClick={() => setHidePantry(v => !v)} className={pillBtn(hidePantry)}>
+                  {hidePantry ? 'Hide pantry' : 'Show pantry'}
+                </button>
+              </div>
+
+              <div className="flex items-center gap-2 bg-white/5 p-1 rounded-xl border border-white/10">
+                <span className="text-[10px] uppercase font-black text-slate-500 ml-2 mr-1">Costs</span>
+                <button onClick={() => setShowCosts(v => !v)} className={pillBtn(showCosts)}>
+                  {showCosts ? 'On' : 'Off'}
+                </button>
+                <button
+                  onClick={() => setExcludePantryFromTotalsCost(v => !v)}
+                  className={pillBtn(excludePantryFromTotalsCost)}
+                >
+                  {excludePantryFromTotalsCost ? 'Exclude pantry' : 'Include pantry'}
+                </button>
+              </div>
+
+              {mode === 'totals' && (
+                <div className="flex items-center gap-2 bg-white/5 p-1 rounded-xl border border-white/10">
+                  <span className="text-[10px] uppercase font-black text-slate-500 ml-2 mr-1">Group</span>
+                  <button onClick={() => setGroupByAisle(v => !v)} className={pillBtn(groupByAisle)}>
+                    {groupByAisle ? 'By aisle' : 'Flat'}
+                  </button>
+                  <button onClick={() => setAutoExpandUnchecked(v => !v)} className={pillBtn(autoExpandUnchecked)}>
+                    Auto expand
+                  </button>
+
+                  {groupByAisle && showCosts && (
+                    <button onClick={() => setCollapseCompleteAisles(v => !v)} className={pillBtn(collapseCompleteAisles)}>
+                      {collapseCompleteAisles ? 'Collapse complete' : 'Show complete'}
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 justify-between">
+              <div className="flex flex-wrap items-center gap-3">
+                <div className="text-left">
+                  <p className="text-[10px] uppercase font-black text-slate-500 tracking-widest">Status</p>
+                  <p className="text-sm font-black text-slate-200">
+                    {items.length} items • {checkedCount} checked • {pricedCoverageLabel}
+                  </p>
+
+                  {showCosts && mode === 'totals' && (
+                    <p className="text-[11px] text-slate-500 mt-1">
+                      {totalsKnownSummary.missingCount === 0 ? (
+                        <>
+                          Total:{' '}
+                          <span className="text-slate-200 font-black">{formatMoney(totalsKnownSummary.knownTotal)}</span>
+                        </>
+                      ) : (
+                        <>
+                          Known:{' '}
+                          <span className="text-slate-200 font-black">{formatMoney(totalsKnownSummary.knownTotal)}</span>
+                          <button
+                            type="button"
+                            onClick={jumpToNextMissing}
+                            className="ml-2 text-slate-500 hover:text-white underline underline-offset-4"
+                            title="Jump to next missing price"
+                          >
+                            • Missing prices: {totalsKnownSummary.missingCount}
+                          </button>
+                        </>
+                      )}
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                <button onClick={onGenerate} className={smallBtn} title="Generate from planner">
+                  <i className="fa-solid fa-basket-shopping mr-2"></i> Generate
+                </button>
+
+                <button onClick={() => setCleanupOpen(true)} className={smallBtn} title="Cleanup panel">
+                  <i className="fa-solid fa-broom mr-2"></i> Cleanup
+                </button>
+
+                <button onClick={handleCopy} className={iconBtn} title="Copy list">
+                  <i className="fa-solid fa-copy"></i>
+                </button>
+                <button onClick={handlePrint} className={iconBtn} title="Print">
+                  <i className="fa-solid fa-print"></i>
+                </button>
+
+                {mode === 'totals' && (
+                  <>
+                    <button onClick={expandAllVisible} className={iconBtn} title="Expand all visible">
+                      <i className="fa-solid fa-down-left-and-up-right-to-center"></i>
+                    </button>
+                    <button onClick={collapseAll} className={iconBtn} title="Collapse all">
+                      <i className="fa-solid fa-up-right-and-down-left-from-center"></i>
+                    </button>
+                  </>
+                )}
+
+                <button onClick={onResetChecks} className={smallBtn} title="Reset checks">
+                  <i className="fa-solid fa-rotate-left mr-2"></i> Reset
+                </button>
+
+                <button
+                  onClick={() => {
+                    if (confirm('Clear the shopping list?')) onClear();
+                  }}
+                  className={`${smallBtn} hover:border-red-400/30 hover:bg-red-500/10`}
+                  title="Clear list"
+                >
+                  <i className="fa-solid fa-trash mr-2"></i> Clear
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Body */}
+      <div className="space-y-6">{mode === 'totals' ? renderTotals() : renderByRecipe()}</div>
+
+      {renderCleanupPanel()}
     </section>
   );
 };

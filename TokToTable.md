@@ -1,104 +1,87 @@
-# TokToTable — Project Context (SYNC v1)
+# TokToTable
 
-## Status
-Local development is stable.
-
-Frontend (Vite + React + TypeScript) and a local backend are running correctly.
-AI functionality is intentionally mocked to unblock product and UX development.
-
-Local and GitHub repositories are in sync.
+**From Scroll to Table**  
+Turn short-form food content (TikTok, Reels) into structured, usable recipes and a smart shopping list.
 
 ---
 
-## Current Architecture
+## Current Status (Jan 2026)
 
-### Frontend
-- Vite + React + TypeScript
-- Uses `/api/*` endpoints only
-- No API keys in the browser
-- State persisted via localStorage
+TokToTable is now a **working end-to-end prototype**:
 
-### Backend (local dev)
-- `server.cjs` (pure Node HTTP server, no dependencies)
-- Endpoints:
-  - `POST /api/extract` → mock recipe extraction
-  - `POST /api/image` → mock image generation (SVG placeholder with timestamp)
+1. **Extraction**
+   - TikTok URL → recipe title, steps, ingredients
+   - Gemini (2.5 Flash / Flash‑Lite) as primary LLM
+   - Strict JSON output (no markdown, no backticks)
+   - Automatic fallback handling reduced
+   - Thumbnails show food image where available
 
-### Project Mode
-- ESM project (`"type": "module"`)
-- CommonJS used explicitly via `.cjs` where needed
+2. **Recipe Vault**
+   - Extracted vs validated states
+   - Recipe detail view
+   - Editable ingredients and steps
+   - Image loading & fallback fixed
 
----
+3. **Shopping List v2**
+   - Aggregated ingredients
+   - Grouped by aisle
+   - Shopping vs cooking mode
+   - Pantry exclusion
+   - Cost visibility
+   - Normalized units
 
-## Key Files
-
-- `server.cjs` — local API server
-- `api/extract.cjs` — mock TikTok → recipe extraction
-- `api/image.cjs` — mock image generation (visual regen proof)
-- `services/geminiService.ts` — frontend → backend bridge
-- `services/aiClient.ts` — image generation facade
-- `services/storage.ts` — centralized localStorage access
-- `vite.config.ts` — Vite dev server + `/api` proxy
-
----
-
-## Known Limitations (Intentional)
-
-- TikTok extraction is mocked (no real video parsing yet)
-- Image regeneration uses mock SVGs (no real AI images)
-- No authentication
-- No database (localStorage only)
-- No creator publishing flow yet
-
-These are deliberate to avoid blocking on AI or infra.
+4. **Cleanup Panel**
+   - Missing prices detection
+   - Pantry candidates surfaced
+   - Manual confirmation only
+   - CSV import/export
 
 ---
 
-## Immediate Next Product Goals
+## Recent Fixes
 
-1. Shopping List
-   - Aggregate ingredients across Planner
-   - Normalize units (g/kg, ml/l, tbsp/tsp)
-   - Checkbox UI + reset
-   - Export / print
-
-2. Planner Improvements
-   - Day-based meals
-   - Auto-ingredient aggregation
-
-3. Cost Estimation
-   - Price per ingredient
-   - Total recipe cost
-   - Weekly menu cost
-
-4. Creator Flow (future)
-   - Creators publish recipes
-   - Users save & remix
-
----
-
-## Deferred (Post-AI / Infra)
-
-- Replace mock `/api/extract` with real provider (Gemini / OpenAI / Claude)
-- Replace mock `/api/image` with real image generation
-- Move backend to serverless (Vercel / Cloudflare)
-- Authentication (users & creators)
-- Database (Supabase / Postgres)
+- Gemini model errors resolved
+- Prompt hardened (raw JSON only)
+- Image rendering fixed
+- Mock recipes no longer override real data
+- Shopping cleanup logic implemented
+- UI and build errors resolved
 
 ---
 
 ## Design Principles
 
-- Never block product progress on AI infra
-- Backend owns all AI keys
-- Frontend only talks to `/api/*`
-- UX > AI cleverness
-- Deterministic, debuggable flows
+- No silent automation
+- LLM parses, user decides
+- Shopping list is core
+- Pantry is opt-in
+- Costs are first-class
 
 ---
 
-## Continuation Keyword
+## Next Focus: Shopping List v2 UX
 
-Use the keyword below in a new chat to resume instantly:
+- Inline cleanup actions
+- Faster price entry
+- Clear totals per aisle/recipe
+- Persistent prices & pantry rules
 
-**TOKTOTABLE_SYNC_V1**
+---
+
+## Tech Stack
+
+- React + TypeScript + Vite
+- Node backend
+- Gemini 2.5 Flash
+- Local-first state
+
+---
+
+## Context Keyword
+
+**pom** — use this to resume TokToTable context in a new chat.
+
+---
+
+TokToTable is stable.  
+Next: make it delightful for weekly use.
