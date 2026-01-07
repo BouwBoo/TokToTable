@@ -6,3 +6,4 @@ dist
 
 printf "\n# macOS\n.DS_Store\n" >> .gitignore
 .DS_Store
+.DS_Store
