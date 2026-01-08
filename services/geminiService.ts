@@ -35,11 +35,24 @@ export async function generateRecipeImage(
  */
 export async function extractRecipeFromUrl(url: string, caption?: string) {
   try {
-    const resp = await fetch("/api/extract", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url, caption }),
-    });
+    const doRequest = async (cap?: string) => {
+      return fetch("/api/extract", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url, caption: cap }),
+      });
+    };
+
+    const hasCaption = typeof caption === "string" && caption.trim().length > 0;
+
+    // 1) First attempt (with caption if provided)
+    let resp = await doRequest(hasCaption ? caption : undefined);
+
+    // 2) Backend guard: if mismatch (409) and we had a caption, retry once without caption
+    if (resp.status === 409 && hasCaption) {
+      console.warn("extractRecipeFromUrl: context mismatch, retrying without caption");
+      resp = await doRequest(undefined);
+    }
 
     if (!resp.ok) return null;
 
