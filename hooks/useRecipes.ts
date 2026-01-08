@@ -1,78 +1,78 @@
 // hooks/useRecipes.ts
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Recipe } from "../types";
 import { loadRecipes, saveRecipes, clearAllStorage } from "../services/storage";
-import { ApiError, extractRecipeFromUrl } from "../services/geminiService";
+import { extractRecipeFromUrl } from "../services/geminiService";
 
 type ProcessingState = "idle" | "fetching" | "analyzing" | "synthesizing" | "error";
-type Filter = "all" | "extracted" | "validated";
-type SortBy = "date" | "title" | "status";
 
-function normalizeStatus(s: any): "extracted" | "validated" {
-  const v = String(s || "").toLowerCase();
-  if (v === "validated") return "validated";
-  return "extracted";
+const COOLDOWN_UNTIL_KEY = "toktotable.cooldownUntilMs";
+
+function isProdEnv(): boolean {
+  // Vite
+try {
+  if (typeof import.meta !== "undefined" && (import.meta as any).env) {
+    return Boolean((import.meta as any).env.PROD);
+  }
+} catch {
+  // ignore
+}
+
+  // Fallback
+  return typeof process !== "undefined" && process.env?.NODE_ENV === "production";
+}
+
+function newId(): string {
+  // browser crypto
+if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+  return crypto.randomUUID();
+}
+
+  return `recipe-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
 export function useRecipes() {
-  // --- Load & normalize legacy data (status casing, etc.) ---
-  const [recipes, setRecipes] = useState<Recipe[]>(() => {
-    const raw = loadRecipes();
-    return (raw || []).map((r: any) => ({
-      ...r,
-      status: normalizeStatus(r.status),
-      created_at: typeof r.created_at === "string" ? r.created_at : new Date().toISOString(),
-    }));
-  });
+  const [recipes, setRecipes] = useState<Recipe[]>(loadRecipes);
 
   const [processingState, setProcessingState] = useState<ProcessingState>("idle");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [selectedRecipe, setSelectedRecipe] = useState<Recipe | null>(null);
 
-  const [filter, setFilter] = useState<Filter>("all");
-  const [sortBy, setSortBy] = useState<SortBy>("date");
+  const [filter, setFilter] = useState<"all" | "extracted" | "validated">("all");
+  const [sortBy, setSortBy] = useState<"date" | "title" | "status">("date");
 
-  // --- Cooldown state (rate limit UX) ---
-  const [isCooldown, setIsCooldown] = useState(false);
-  const [cooldownRemainingMs, setCooldownRemainingMs] = useState(0);
-  const cooldownTimerRef = useRef<number | null>(null);
+  // --- Cooldown (PROD only) ---
+  const prod = isProdEnv();
+  const [cooldownUntilMs, setCooldownUntilMs] = useState<number>(() => {
+    if (!prod) return 0;
+    const raw = localStorage.getItem(COOLDOWN_UNTIL_KEY);
+    const n = raw ? Number(raw) : 0;
+    return Number.isFinite(n) ? n : 0;
+  });
 
-  const stopCooldown = () => {
-    setIsCooldown(false);
-    setCooldownRemainingMs(0);
-    if (cooldownTimerRef.current) {
-      window.clearInterval(cooldownTimerRef.current);
-      cooldownTimerRef.current = null;
-    }
-  };
-
-  const startCooldown = (seconds: number) => {
-    const totalMs = Math.max(1, seconds) * 1000;
-    const startedAt = Date.now();
-
-    setIsCooldown(true);
-    setCooldownRemainingMs(totalMs);
-
-    if (cooldownTimerRef.current) window.clearInterval(cooldownTimerRef.current);
-
-    cooldownTimerRef.current = window.setInterval(() => {
-      const elapsed = Date.now() - startedAt;
-      const remaining = Math.max(0, totalMs - elapsed);
-      setCooldownRemainingMs(remaining);
-
-      if (remaining <= 0) stopCooldown();
-    }, 250);
-  };
+  const [nowMs, setNowMs] = useState<number>(Date.now());
 
   useEffect(() => {
     saveRecipes(recipes);
   }, [recipes]);
 
   useEffect(() => {
-    return () => {
-      if (cooldownTimerRef.current) window.clearInterval(cooldownTimerRef.current);
-    };
-  }, []);
+    if (!prod) return;
+    const t = window.setInterval(() => setNowMs(Date.now()), 250);
+    return () => window.clearInterval(t);
+  }, [prod]);
+
+  useEffect(() => {
+    if (!prod) return;
+    if (cooldownUntilMs > 0) {
+      localStorage.setItem(COOLDOWN_UNTIL_KEY, String(cooldownUntilMs));
+    } else {
+      localStorage.removeItem(COOLDOWN_UNTIL_KEY);
+    }
+  }, [prod, cooldownUntilMs]);
+
+  const cooldownRemainingMs = prod ? Math.max(0, cooldownUntilMs - nowMs) : 0;
+  const isCooldown = prod ? cooldownRemainingMs > 0 : false;
 
   const filteredAndSortedRecipes = useMemo(() => {
     const toMs = (v: any) => {
@@ -82,21 +82,18 @@ export function useRecipes() {
     };
 
     return recipes
-      .filter((r) => {
-        if (filter === "all") return true;
-        // case-insensitive + legacy-safe
-        return normalizeStatus(r.status) === filter;
-      })
+      .filter((r) => filter === "all" || r.status === filter)
       .sort((a, b) => {
         if (sortBy === "title") return a.title.localeCompare(b.title);
-        if (sortBy === "status") return String(a.status).localeCompare(String(b.status));
+        if (sortBy === "status") return a.status.localeCompare(b.status);
         return toMs(b.created_at) - toMs(a.created_at);
       });
   }, [recipes, filter, sortBy]);
 
-  const dismissError = () => {
-    setProcessingState("idle");
-    setErrorMessage(null);
+  const startCooldown = (ms: number) => {
+    if (!prod) return; // DEV: nooit blokkeren
+    const until = Date.now() + Math.max(0, ms);
+    setCooldownUntilMs(until);
   };
 
   const extractFromUrl = async (url: string, caption?: string) => {
@@ -108,9 +105,10 @@ export function useRecipes() {
       return;
     }
 
-    if (isCooldown) {
+    // PROD cooldown gate
+    if (prod && isCooldown) {
       const secs = Math.ceil(cooldownRemainingMs / 1000);
-      setErrorMessage(`Even wachten: ${secs}s cooldown (rate limit).`);
+      setErrorMessage(`Even wachten (${secs}s)… te veel extracties kort achter elkaar.`);
       setProcessingState("error");
       return;
     }
@@ -119,13 +117,14 @@ export function useRecipes() {
     setProcessingState("fetching");
 
     try {
+      // geminiService accepteert (url, caption?)
       const result: any = await extractRecipeFromUrl(u, caption);
 
       if (result && result.title) {
         setProcessingState("synthesizing");
 
         const baseRecipe: Recipe = {
-          id: `recipe-${Date.now()}`,
+          id: newId(),
           title: result.title,
           source_url: u,
           creator: result.creator || "@tiktok_chef",
@@ -134,7 +133,9 @@ export function useRecipes() {
             name: ing?.name ?? "",
             quantity: ing?.quantity ?? "",
             unit: ing?.unit ?? "",
-            raw_text: ing?.raw_text ?? `${ing?.quantity ?? ""} ${ing?.unit ?? ""} ${ing?.name ?? ""}`.trim(),
+            raw_text:
+              ing?.raw_text ??
+              `${ing?.quantity ?? ""} ${ing?.unit ?? ""} ${ing?.name ?? ""}`.trim(),
             normalized_name: ing?.normalized_name,
             foodon_id: ing?.foodon_id,
           })),
@@ -158,44 +159,58 @@ export function useRecipes() {
         setSelectedRecipe(baseRecipe);
         setProcessingState("idle");
         setErrorMessage(null);
-      } else {
-        setErrorMessage("Extractie lukte niet. Probeer een andere TikTok link.");
-        setProcessingState("error");
+        return;
       }
+
+      // Als geminiService null teruggeeft, kan dat ook rate-limit zijn.
+      // We proberen dat uit een eventuele error te halen (als geminiService dat ooit throwt).
+      setErrorMessage("Extractie lukte niet. Probeer een andere TikTok link.");
+      setProcessingState("error");
     } catch (err: any) {
       console.error("Extraction error:", err);
 
-      if (err instanceof ApiError && err.code === "RATE_LIMITED") {
-        const secs = err.retryAfterSeconds ?? 30;
-        startCooldown(secs);
-        setErrorMessage(`Rate limit. Probeer opnieuw over ${secs}s.`);
+      // Best-effort rate limit detectie (werkt als geminiService status/message doorgeeft)
+      const status = err?.status ?? err?.response?.status;
+      const msg = String(err?.message ?? "");
+      const is429 = status === 429 || msg.includes("429") || msg.toLowerCase().includes("rate");
+
+      if (is429) {
+        // retry-after: standaard 60s (kan je later verfijnen via headers in geminiService)
+        startCooldown(60_000);
+        setErrorMessage("Te veel requests. Even cooldown…");
         setProcessingState("error");
         return;
       }
 
-      setErrorMessage(err?.message || "Er ging iets mis. Probeer opnieuw.");
+      setErrorMessage(msg && msg !== "[object Object]" ? msg : "Er ging iets mis. Probeer opnieuw.");
       setProcessingState("error");
     }
   };
 
   const saveRecipe = (updated: Recipe) => {
-    // normalize status always (avoids reintroducing legacy casing)
-    const normalized: Recipe = { ...updated, status: normalizeStatus(updated.status) };
-    setRecipes((prev) => prev.map((r) => (r.id === normalized.id ? normalized : r)));
+    setRecipes((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
     setSelectedRecipe(null);
   };
 
   const deleteRecipe = (id: string) => {
     setRecipes((prev) => prev.filter((r) => r.id !== id));
+    if (selectedRecipe?.id === id) setSelectedRecipe(null);
   };
 
   const clearAll = () => {
     clearAllStorage();
+    localStorage.removeItem(COOLDOWN_UNTIL_KEY);
+    setCooldownUntilMs(0);
+
     setRecipes([]);
     setSelectedRecipe(null);
     setProcessingState("idle");
     setErrorMessage(null);
-    stopCooldown();
+  };
+
+  const dismissError = () => {
+    setProcessingState("idle");
+    setErrorMessage(null);
   };
 
   return {
@@ -207,7 +222,7 @@ export function useRecipes() {
     errorMessage,
     dismissError,
 
-    // cooldown (for UrlInput/AppRoot)
+    // cooldown (PROD only)
     isCooldown,
     cooldownRemainingMs,
 
