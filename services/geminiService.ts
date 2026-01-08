@@ -1,6 +1,22 @@
 // services/geminiService.ts
 import { Ingredient, Step } from "../types";
 
+export type ApiErrorCode = "RATE_LIMITED" | "BAD_REQUEST" | "SERVER_ERROR" | "NETWORK_ERROR";
+
+export class ApiError extends Error {
+  code: ApiErrorCode;
+  status?: number;
+  retryAfterSeconds?: number;
+
+  constructor(message: string, code: ApiErrorCode, status?: number, retryAfterSeconds?: number) {
+    super(message);
+    this.name = "ApiError";
+    this.code = code;
+    this.status = status;
+    this.retryAfterSeconds = retryAfterSeconds;
+  }
+}
+
 /**
  * Frontend calls backend endpoint that generates an image (mock for now).
  * Returns a data URL string (e.g. data:image/png;base64,...)
@@ -54,10 +70,31 @@ export async function extractRecipeFromUrl(url: string, caption?: string) {
       resp = await doRequest(undefined);
     }
 
-    if (!resp.ok) return null;
+    // --- Rate limit handling (Netlify function returns 429 + Retry-After) ---
+    if (resp.status === 429) {
+      const ra = resp.headers.get("Retry-After");
+      const retryAfterSeconds = ra ? Math.max(1, parseInt(ra, 10) || 0) : undefined;
+      throw new ApiError(
+        `Rate limit. Try again in ${retryAfterSeconds ?? 30}s.`,
+        "RATE_LIMITED",
+        429,
+        retryAfterSeconds
+      );
+    }
+
+    if (!resp.ok) {
+      if (resp.status >= 400 && resp.status < 500) {
+        throw new ApiError("Request rejected by server.", "BAD_REQUEST", resp.status);
+      }
+      throw new ApiError("Server error.", "SERVER_ERROR", resp.status);
+    }
 
     const data = await resp.json();
-    if (!data?.ok) return null;
+    if (!data?.ok) {
+      // Backend used {ok:false, error:"..."}
+      const msg = typeof data?.error === "string" ? data.error : "Extraction failed.";
+      throw new ApiError(msg, "SERVER_ERROR", resp.status);
+    }
 
     // Visual fallback if thumbnail_url is missing
     const fallbackSvg = `
@@ -105,9 +142,7 @@ export async function extractRecipeFromUrl(url: string, caption?: string) {
       return {
         title: String(r.title || "").trim() || "Untitled recipe",
         creator:
-          typeof data.creator === "string" && data.creator.trim()
-            ? data.creator.trim()
-            : "@tiktok_chef",
+          typeof data.creator === "string" && data.creator.trim() ? data.creator.trim() : "@tiktok_chef",
         thumbnail_url: thumb,
         ingredients,
         steps,
@@ -128,8 +163,10 @@ export async function extractRecipeFromUrl(url: string, caption?: string) {
     }
 
     return null;
-  } catch (e) {
+  } catch (e: any) {
+    if (e instanceof ApiError) throw e;
+
     console.error("extractRecipeFromUrl failed:", e);
-    return null;
+    throw new ApiError("Network error.", "NETWORK_ERROR");
   }
 }

@@ -1,20 +1,29 @@
+// components/UrlInput.tsx
 import React, { useMemo, useState } from "react";
 
 interface UrlInputProps {
   onExtract: (url: string, caption?: string) => void;
   isLoading: boolean;
+
+  // NEW (additive, non-breaking)
+  isCooldown?: boolean;
+  cooldownRemainingMs?: number;
 }
 
 function extractTikTokUrl(text: string): string | null {
   const t = (text || "").trim();
   if (!t) return null;
 
-  // Simple pattern: find first tiktok.com/... substring
   const match = t.match(/https?:\/\/(www\.)?tiktok\.com\/[^\s]+/i);
   return match ? match[0].trim() : null;
 }
 
-const UrlInput: React.FC<UrlInputProps> = ({ onExtract, isLoading }) => {
+const UrlInput: React.FC<UrlInputProps> = ({
+  onExtract,
+  isLoading,
+  isCooldown = false,
+  cooldownRemainingMs = 0,
+}) => {
   const [url, setUrl] = useState("");
   const [caption, setCaption] = useState("");
 
@@ -26,25 +35,25 @@ const UrlInput: React.FC<UrlInputProps> = ({ onExtract, isLoading }) => {
     return inferredUrlFromCaption || "";
   }, [url, inferredUrlFromCaption]);
 
-  const canSubmit = !!effectiveUrl && !isLoading;
+  const canSubmit = !!effectiveUrl && !isLoading && !isCooldown;
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (!canSubmit) return;
 
     const u = effectiveUrl.trim();
     if (!u) return;
 
-    // If user pasted URL into caption by accident, we still proceed.
-    // Caption: remove the URL part if that's the only content, otherwise keep.
     let c = caption.trim();
     if (!url.trim() && inferredUrlFromCaption) {
-      // If caption is basically only the URL, clear it.
       const onlyUrl = c.replace(inferredUrlFromCaption, "").trim();
       c = onlyUrl.length === 0 ? "" : onlyUrl;
     }
 
     onExtract(u, c ? c : undefined);
   };
+
+  const cooldownSeconds = Math.ceil(Math.max(0, cooldownRemainingMs) / 1000);
 
   return (
     <div className="max-w-3xl mx-auto mb-12">
@@ -64,23 +73,36 @@ const UrlInput: React.FC<UrlInputProps> = ({ onExtract, isLoading }) => {
               value={url}
               onChange={(e) => {
                 const next = e.target.value;
+
                 // ✅ Prevent stale caption leaking between different URL extracts
+                // Only reset when the actual URL input changes to a non-empty, different value.
                 if (next.trim() && next.trim() !== url.trim()) {
                   setCaption("");
                 }
+
                 setUrl(next);
               }}
+              disabled={isLoading || isCooldown}
             />
 
             <button
               type="submit"
               disabled={!canSubmit}
               className="tiktok-gradient px-8 py-3 rounded-xl font-bold text-white transition-all shadow-lg shadow-pink-500/20 disabled:opacity-50 disabled:cursor-not-allowed hover:scale-105 active:scale-95"
-              title={!effectiveUrl ? "Paste a TikTok URL first" : undefined}
+              title={
+                !effectiveUrl
+                  ? "Paste a TikTok URL first"
+                  : isCooldown
+                    ? "Please wait before extracting again"
+                    : undefined
+              }
             >
-              {isLoading ? (
+              {isCooldown ? (
+                `Try again in ${cooldownSeconds}s`
+              ) : isLoading ? (
                 <span className="flex items-center gap-2">
-                  <i className="fa-solid fa-spinner fa-spin"></i> Analyzing...
+                  <i className="fa-solid fa-spinner fa-spin"></i>
+                  Analyzing...
                 </span>
               ) : (
                 "Extract Recipe"
@@ -97,7 +119,7 @@ const UrlInput: React.FC<UrlInputProps> = ({ onExtract, isLoading }) => {
               rows={3}
               value={caption}
               onChange={(e) => setCaption(e.target.value)}
-              disabled={isLoading}
+              disabled={isLoading || isCooldown}
             />
             <div className="mt-2 text-[11px] text-slate-500">
               Tip: als je per ongeluk de URL hierboven niet plakt maar hier, dan fixen we dat automatisch.
@@ -108,13 +130,16 @@ const UrlInput: React.FC<UrlInputProps> = ({ onExtract, isLoading }) => {
 
       <div className="mt-4 flex justify-center gap-4 text-xs text-slate-500 font-medium">
         <span className="flex items-center gap-1">
-          <i className="fa-solid fa-check text-emerald-500"></i> OCR Visual Analysis
+          <i className="fa-solid fa-check text-emerald-500"></i>
+          OCR Visual Analysis
         </span>
         <span className="flex items-center gap-1">
-          <i className="fa-solid fa-check text-emerald-500"></i> Whisper Audio ASR
+          <i className="fa-solid fa-check text-emerald-500"></i>
+          Whisper Audio ASR
         </span>
         <span className="flex items-center gap-1">
-          <i className="fa-solid fa-check text-emerald-500"></i> LLM Synthesis
+          <i className="fa-solid fa-check text-emerald-500"></i>
+          LLM Synthesis
         </span>
       </div>
     </div>

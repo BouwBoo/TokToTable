@@ -8,7 +8,6 @@ import RecipeEditor from './components/RecipeEditor';
 import Settings from './components/Settings';
 import ProcessingVisualizer from './components/ProcessingVisualizer';
 
-// Shopping List (NEW)
 import ShoppingListView from './components/ShoppingListView';
 import { useShoppingList } from './hooks/useShoppingList';
 
@@ -37,6 +36,9 @@ const App: React.FC = () => {
     deleteRecipe,
     clearAll,
     dismissError,
+    errorMessage,
+    isCooldown,
+    cooldownRemainingMs,
   } = useRecipes();
 
   const {
@@ -60,9 +62,9 @@ const App: React.FC = () => {
   };
 
   const handleClearRecipes = () => {
-    clearAll(); // wist recipes storage
-    clearPlanner(); // planner ook leeg
-    clear(); // shopping list ook leeg
+    clearAll();
+    clearPlanner();
+    clear();
     alert('Recipe Vault cleared.');
   };
 
@@ -78,7 +80,6 @@ const App: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-[#070A18] text-slate-100">
-      {/* Landing-style ambient glow (safe fixed layer) */}
       <div className="tt-glow-bg" />
 
       <Navbar onSetView={setCurrentView} currentView={currentView} />
@@ -95,7 +96,12 @@ const App: React.FC = () => {
               </p>
             </div>
 
-            <UrlInput onExtract={extractFromUrl} isLoading={processingState !== 'idle' && processingState !== 'error'} />
+            <UrlInput
+              onExtract={extractFromUrl}
+              isLoading={processingState !== 'idle'}
+              isCooldown={isCooldown}
+              cooldownRemainingMs={cooldownRemainingMs}
+            />
 
             {['fetching', 'analyzing', 'synthesizing'].includes(processingState) ? (
               <div className="py-12">
@@ -154,7 +160,12 @@ const App: React.FC = () => {
                 ) : (
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-8">
                     {filteredAndSortedRecipes.map(recipe => (
-                      <RecipeCard key={recipe.id} recipe={recipe} onClick={setSelectedRecipe} onDelete={handleDeleteRecipe} />
+                      <RecipeCard
+                        key={recipe.id}
+                        recipe={recipe}
+                        onClick={setSelectedRecipe}
+                        onDelete={handleDeleteRecipe}
+                      />
                     ))}
                   </div>
                 )}
@@ -201,7 +212,11 @@ const App: React.FC = () => {
                           key={rid}
                           className="group relative bg-slate-800/50 p-3 rounded-xl border border-white/10 hover:border-pink-500/30 transition-all"
                         >
-                          <img src={recipe.thumbnail_url} className="w-full h-20 object-cover rounded-lg mb-2 opacity-80" alt="" />
+                          <img
+                            src={recipe.thumbnail_url}
+                            className="w-full h-20 object-cover rounded-lg mb-2 opacity-80"
+                            alt=""
+                          />
                           <p className="text-[11px] font-bold line-clamp-2 pr-4">{recipe.title}</p>
                           <button
                             onClick={() => removeFromPlanner(day, rid)}
@@ -239,7 +254,9 @@ const App: React.FC = () => {
           />
         )}
 
-        {currentView === 'settings' && <Settings onClearRecipes={handleClearRecipes} onClearPlanner={handleClearPlanner} />}
+        {currentView === 'settings' && (
+          <Settings onClearRecipes={handleClearRecipes} onClearPlanner={handleClearPlanner} />
+        )}
       </main>
 
       {showPickerForDay && (
@@ -253,41 +270,45 @@ const App: React.FC = () => {
             </div>
 
             <div className="flex-1 overflow-y-auto p-4 space-y-2 bg-slate-950">
-              {recipes.length === 0 ? (
-                <p className="text-center text-slate-500 py-12">No recipes in your vault yet.</p>
-              ) : (
-                recipes.map((r: Recipe) => (
-                  <button
-                    key={r.id}
-                    onClick={() => addToPlanner(showPickerForDay, r.id)}
-                    className="w-full text-left p-3 rounded-xl hover:bg-white/5 border border-transparent hover:border-white/10 transition-all flex gap-4 items-center group"
-                  >
-                    <img
-                      src={r.thumbnail_url}
-                      className="w-14 h-14 rounded-lg object-cover group-hover:scale-105 transition-transform"
-                      alt=""
-                    />
-                    <div className="flex-1 overflow-hidden">
-                      <p className="font-bold text-sm truncate">{r.title}</p>
-                      <p className="text-[10px] text-slate-500 uppercase tracking-tighter">{r.creator}</p>
-                    </div>
-                    <i className="fa-solid fa-plus text-slate-700 group-hover:text-pink-500 transition-colors mr-2"></i>
-                  </button>
-                ))
-              )}
+              {recipes.map((r: Recipe) => (
+                <button
+                  key={r.id}
+                  onClick={() => addToPlanner(showPickerForDay, r.id)}
+                  className="w-full text-left p-3 rounded-xl hover:bg-white/5 border border-transparent hover:border-white/10 transition-all flex gap-4 items-center group"
+                >
+                  <img
+                    src={r.thumbnail_url}
+                    className="w-14 h-14 rounded-lg object-cover group-hover:scale-105 transition-transform"
+                    alt=""
+                  />
+                  <div className="flex-1 overflow-hidden">
+                    <p className="font-bold text-sm truncate">{r.title}</p>
+                    <p className="text-[10px] text-slate-500 uppercase tracking-tighter">{r.creator}</p>
+                  </div>
+                  <i className="fa-solid fa-plus text-slate-700 group-hover:text-pink-500 transition-colors mr-2"></i>
+                </button>
+              ))}
             </div>
           </div>
         </div>
       )}
 
-      {selectedRecipe && <RecipeEditor recipe={selectedRecipe} onSave={saveRecipe} onClose={() => setSelectedRecipe(null)} />}
+      {selectedRecipe && (
+        <RecipeEditor
+          recipe={selectedRecipe}
+          onSave={saveRecipe}
+          onClose={() => setSelectedRecipe(null)}
+        />
+      )}
 
       {processingState === 'error' && (
         <div className="fixed bottom-10 left-1/2 -translate-x-1/2 bg-red-500 text-white px-8 py-4 rounded-2xl shadow-2xl flex items-center gap-4 animate-bounce z-[200]">
           <i className="fa-solid fa-circle-exclamation text-2xl"></i>
           <div>
             <p className="font-bold">Extraction Failed</p>
-            <p className="text-xs opacity-90">Could not find recipe data for this video. Try another link.</p>
+            <p className="text-xs opacity-90">
+              {errorMessage || 'Something went wrong during extraction.'}
+            </p>
           </div>
           <button
             onClick={dismissError}
