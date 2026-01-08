@@ -1,139 +1,225 @@
 // hooks/useRecipes.ts
 import { useEffect, useMemo, useState } from "react";
 import { Recipe } from "../types";
-import { loadRecipes, saveRecipes, clearAllStorage } from "../services/storage";
+import {
+  loadRecipes,
+  saveRecipes,
+  clearAllStorage,
+} from "../services/storage";
 import { extractRecipeFromUrl } from "../services/geminiService";
 
-type ProcessingState = "idle" | "fetching" | "analyzing" | "synthesizing" | "error";
+type ProcessingState =
+  | "idle"
+  | "fetching"
+  | "analyzing"
+  | "synthesizing"
+  | "error";
 
 export function useRecipes() {
-  const [recipes, setRecipes] = useState<Recipe[]>(loadRecipes);
+  /* ------------------------------------------------------------------
+   * Core state
+   * ------------------------------------------------------------------ */
 
-  const [processingState, setProcessingState] = useState<ProcessingState>("idle");
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [recipes, setRecipes] = useState<Recipe[]>(() => loadRecipes());
   const [selectedRecipe, setSelectedRecipe] = useState<Recipe | null>(null);
 
-  const [filter, setFilter] = useState<"all" | "extracted" | "validated">("all");
-  const [sortBy, setSortBy] = useState<"date" | "title" | "status">("date");
+  const [processingState, setProcessingState] =
+    useState<ProcessingState>("idle");
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  /* ------------------------------------------------------------------
+   * Rate-limit / cooldown state (NEW, additive)
+   * ------------------------------------------------------------------ */
+
+  const [cooldownUntil, setCooldownUntil] = useState<number | null>(null);
+
+  const isCooldown =
+    cooldownUntil !== null && Date.now() < cooldownUntil;
+
+  const cooldownRemainingMs = isCooldown
+    ? cooldownUntil! - Date.now()
+    : 0;
+
+  /* ------------------------------------------------------------------
+   * Filters / sorting
+   * ------------------------------------------------------------------ */
+
+  const [filter, setFilter] =
+    useState<"all" | "extracted" | "validated">("all");
+
+  const [sortBy, setSortBy] =
+    useState<"newest" | "oldest">("newest");
+
+  /* ------------------------------------------------------------------
+   * Persistence
+   * ------------------------------------------------------------------ */
 
   useEffect(() => {
     saveRecipes(recipes);
   }, [recipes]);
 
-  const filteredAndSortedRecipes = useMemo(() => {
-    const toMs = (v: any) => {
-      const d = new Date(String(v));
-      const ms = d.getTime();
-      return Number.isFinite(ms) ? ms : 0;
-    };
+  /* ------------------------------------------------------------------
+   * Restore cooldown (prod only)
+   * ------------------------------------------------------------------ */
 
-    return recipes
-      .filter((r) => filter === "all" || r.status === filter)
-      .sort((a, b) => {
-        if (sortBy === "title") return a.title.localeCompare(b.title);
-        if (sortBy === "status") return a.status.localeCompare(b.status);
-        return toMs(b.created_at) - toMs(a.created_at);
-      });
+  useEffect(() => {
+    if (!import.meta.env.PROD) return;
+
+    const stored = localStorage.getItem("toktotable.cooldownUntil");
+    if (!stored) return;
+
+    const ts = Number(stored);
+    if (!isNaN(ts) && ts > Date.now()) {
+      setCooldownUntil(ts);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!import.meta.env.PROD) return;
+
+    if (cooldownUntil) {
+      localStorage.setItem(
+        "toktotable.cooldownUntil",
+        String(cooldownUntil)
+      );
+    } else {
+      localStorage.removeItem("toktotable.cooldownUntil");
+    }
+  }, [cooldownUntil]);
+
+  /* ------------------------------------------------------------------
+   * Derived lists
+   * ------------------------------------------------------------------ */
+
+  const filteredAndSortedRecipes = useMemo(() => {
+    let list = [...recipes];
+
+    if (filter === "extracted") {
+      list = list.filter((r) => !r.validated);
+    }
+
+    if (filter === "validated") {
+      list = list.filter((r) => r.validated);
+    }
+
+    list.sort((a, b) => {
+      const aTime = Date.parse(a.created_at);
+      const bTime = Date.parse(b.created_at);
+
+      return sortBy === "newest" ? bTime - aTime : aTime - bTime;
+    });
+
+    return list;
   }, [recipes, filter, sortBy]);
 
-  const extractFromUrl = async (url: string, caption?: string) => {
-    const u = url.trim();
+  /* ------------------------------------------------------------------
+   * Actions
+   * ------------------------------------------------------------------ */
 
-    if (!u.includes("tiktok.com")) {
-      setErrorMessage("Ongeldige link. Plak een TikTok video-URL.");
-      setProcessingState("error");
+  async function extractFromUrl(url: string, caption?: string) {
+    if (isCooldown) {
+      setErrorMessage("Please wait before extracting again.");
       return;
     }
 
-    setErrorMessage(null);
     setProcessingState("fetching");
+    setErrorMessage(null);
 
-    try {
-      // geminiService accepteert (url, caption?)
-      const result: any = await extractRecipeFromUrl(u, caption);
+    const result = await extractRecipeFromUrl(url, caption);
 
-      if (result && result.title) {
-        setProcessingState("synthesizing");
+    if (result && typeof result === "object" && "kind" in result) {
+      if (result.kind === "RATE_LIMIT") {
+        const maxMs = import.meta.env.DEV
+          ? Math.min(result.retryAfterMs, 5000)
+          : result.retryAfterMs;
 
-        const baseRecipe: Recipe = {
-          id: `recipe-${Date.now()}`,
-          title: result.title,
-          source_url: u,
-          creator: result.creator || "@tiktok_chef",
-          // In jouw “vannacht werkte alles”-flow kwam dit meestal uit geminiService (real thumb of fallback/mock)
-          thumbnail_url: result.thumbnail_url || "",
-          ingredients: (result.ingredients || []).map((ing: any) => ({
-            name: ing?.name ?? "",
-            quantity: ing?.quantity ?? "",
-            unit: ing?.unit ?? "",
-            raw_text: ing?.raw_text ?? `${ing?.quantity ?? ""} ${ing?.unit ?? ""} ${ing?.name ?? ""}`.trim(),
-            normalized_name: ing?.normalized_name,
-            foodon_id: ing?.foodon_id,
-          })),
-          steps: (result.steps || []).map((s: any, i: number) => ({
-            step_number: s?.step_number ?? i + 1,
-            instruction: s?.instruction ?? s?.text ?? "",
-            timestamp_start: s?.timestamp_start ?? s?.start ?? 0,
-            timestamp_end: s?.timestamp_end ?? s?.end ?? 0,
-            duration_seconds: s?.duration_seconds,
-          })),
-          sources: result.sources || [],
-          status: "extracted",
-          created_at: new Date().toISOString(),
-          rating: result.rating,
-          likes: result.likes,
-          isLiked: result.isLiked,
-          comments: result.comments,
-        };
-
-        setRecipes((prev) => [baseRecipe, ...prev]);
-        setSelectedRecipe(baseRecipe);
-        setProcessingState("idle");
-        setErrorMessage(null);
-      } else {
-        setErrorMessage("Extractie lukte niet. Probeer een andere TikTok link.");
+        setCooldownUntil(Date.now() + maxMs);
         setProcessingState("error");
+        setErrorMessage(
+          "Too many extractions. Please wait a moment and try again."
+        );
+        return;
       }
-    } catch (err: any) {
-      console.error("Extraction error:", err);
-      setErrorMessage("Er ging iets mis. Probeer opnieuw.");
+
       setProcessingState("error");
+      setErrorMessage(result.message ?? "Extraction failed.");
+      return;
     }
-  };
 
-  const saveRecipe = (updated: Recipe) => {
-    setRecipes((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
-    setSelectedRecipe(null);
-  };
+    if (!result) {
+      setProcessingState("error");
+      setErrorMessage("Extraction failed.");
+      return;
+    }
 
-  const deleteRecipe = (id: string) => {
+    /* -----------------------------
+       SUCCESS (critical fix here)
+       ----------------------------- */
+
+    // ⛔ strip any backend created_at (number)
+    const { created_at: _ignored, ...safeResult } = result as any;
+
+    const recipe: Recipe = {
+      ...safeResult,
+      id: crypto.randomUUID(),
+      created_at: new Date().toISOString(), // ✅ string, guaranteed
+      validated: false,
+    };
+
+    setRecipes((prev) => [recipe, ...prev]);
+    setSelectedRecipe(recipe);
+    setProcessingState("idle");
+  }
+
+  function saveRecipe(updated: Recipe) {
+    setRecipes((prev) =>
+      prev.map((r) => (r.id === updated.id ? updated : r))
+    );
+    setSelectedRecipe(updated);
+  }
+
+  function deleteRecipe(id: string) {
     setRecipes((prev) => prev.filter((r) => r.id !== id));
-  };
+    if (selectedRecipe?.id === id) {
+      setSelectedRecipe(null);
+    }
+  }
 
-  const clearAll = () => {
+  function clearAll() {
     clearAllStorage();
     setRecipes([]);
     setSelectedRecipe(null);
-    setProcessingState("idle");
+    setCooldownUntil(null);
     setErrorMessage(null);
-  };
+    setProcessingState("idle");
+  }
 
-  const dismissError = () => {
-    setProcessingState("idle");
+  /* ------------------------------------------------------------------
+   * Error helpers (V1 compatibility)
+   * ------------------------------------------------------------------ */
+
+  function dismissError() {
     setErrorMessage(null);
-  };
+    if (processingState === "error") {
+      setProcessingState("idle");
+    }
+  }
+
+  /* ------------------------------------------------------------------
+   * Public API
+   * ------------------------------------------------------------------ */
 
   return {
     recipes,
-    setRecipes,
+    selectedRecipe,
+    setSelectedRecipe,
 
     processingState,
-    setProcessingState,
     errorMessage,
     dismissError,
 
-    selectedRecipe,
-    setSelectedRecipe,
+    isCooldown,
+    cooldownRemainingMs,
 
     filter,
     setFilter,
