@@ -62,7 +62,14 @@ const UrlInput: React.FC<UrlInputProps> = ({ onExtract, isLoading }) => {
               placeholder="Paste TikTok URL..."
               className="w-full bg-transparent border-none focus:ring-0 text-white px-4 py-3 placeholder:text-slate-600"
               value={url}
-              onChange={(e) => setUrl(e.target.value)}
+              onChange={(e) => {
+                const next = e.target.value;
+                // ✅ Prevent stale caption leaking between different URL extracts
+                if (next.trim() && next.trim() !== url.trim()) {
+                  setCaption("");
+                }
+                setUrl(next);
+              }}
             />
 
             <button
@@ -83,9 +90,7 @@ const UrlInput: React.FC<UrlInputProps> = ({ onExtract, isLoading }) => {
 
           {/* Caption / Description (optional) */}
           <div className="px-4 pb-3 pt-1">
-            <div className="mt-2 text-[11px] text-slate-400">
-              Caption / notes (optional)
-            </div>
+            <div className="mt-2 text-[11px] text-slate-400">Caption / notes (optional)</div>
             <textarea
               placeholder="Paste the TikTok caption / ingredients / notes here (optional)"
               className="w-full mt-2 bg-black/20 border border-white/10 rounded-xl px-4 py-3 text-sm text-white placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-pink-500/40"
