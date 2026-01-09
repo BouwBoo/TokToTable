@@ -1,20 +1,72 @@
 // services/geminiService.ts
 import { Ingredient, Step } from "../types";
 
-export type ApiErrorCode = "RATE_LIMITED" | "BAD_REQUEST" | "SERVER_ERROR" | "NETWORK_ERROR";
+export type ApiErrorCode =
+  | "LIMIT_REACHED"
+  | "RATE_LIMITED"
+  | "BAD_REQUEST"
+  | "SERVER_ERROR"
+  | "NETWORK_ERROR";
 
 export class ApiError extends Error {
   code: ApiErrorCode;
   status?: number;
   retryAfterSeconds?: number;
+  meta?: Record<string, any>;
 
-  constructor(message: string, code: ApiErrorCode, status?: number, retryAfterSeconds?: number) {
+  constructor(
+    message: string,
+    code: ApiErrorCode,
+    status?: number,
+    retryAfterSeconds?: number,
+    meta?: Record<string, any>
+  ) {
     super(message);
     this.name = "ApiError";
     this.code = code;
     this.status = status;
     this.retryAfterSeconds = retryAfterSeconds;
+    this.meta = meta;
   }
+}
+
+/**
+ * Stable anonymous user id for server-side usage tracking (V3).
+ * Stored in localStorage so it survives reloads.
+ */
+function getAnonId(): string {
+  const k = "ttt_anon_id";
+  try {
+    const existing = localStorage.getItem(k);
+    if (existing && existing.trim()) return existing;
+
+    // Prefer crypto.randomUUID when available
+    const uuid =
+      (globalThis.crypto && "randomUUID" in globalThis.crypto
+        ? // @ts-ignore
+          globalThis.crypto.randomUUID()
+        : null) || null;
+
+    const fallback =
+      "anon_" +
+      (uuid ||
+        `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}_${Math.random()
+          .toString(36)
+          .slice(2, 10)}`);
+
+    localStorage.setItem(k, fallback);
+    return fallback;
+  } catch {
+    // If localStorage is blocked, fall back to a per-session-ish id
+    return "anon_" + `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 12)}`;
+  }
+}
+
+function baseHeaders(): Record<string, string> {
+  return {
+    "Content-Type": "application/json",
+    "x-ttt-user": getAnonId(),
+  };
 }
 
 /**
@@ -29,7 +81,7 @@ export async function generateRecipeImage(
   try {
     const resp = await fetch("/api/image", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: baseHeaders(),
       body: JSON.stringify({ title, ingredients }),
     });
 
@@ -54,7 +106,7 @@ export async function extractRecipeFromUrl(url: string, caption?: string) {
     const doRequest = async (cap?: string) => {
       return fetch("/api/extract", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: baseHeaders(),
         body: JSON.stringify({ url, caption: cap }),
       });
     };
@@ -70,8 +122,35 @@ export async function extractRecipeFromUrl(url: string, caption?: string) {
       resp = await doRequest(undefined);
     }
 
-    // --- Rate limit handling (Netlify function returns 429 + Retry-After) ---
+    // --- 429 handling:
+    // Could be:
+    //  - V3 limit_reached (our monetization gate)
+    //  - legacy rate limit (Retry-After)
     if (resp.status === 429) {
+      let body: any = null;
+      try {
+        body = await resp.json();
+      } catch {
+        // ignore
+      }
+
+      if (body && body.error === "limit_reached") {
+        const resetAt = typeof body.resetAt === "string" ? body.resetAt : undefined;
+        throw new ApiError(
+          "Free limit reached. Upgrade to Pro to keep extracting.",
+          "LIMIT_REACHED",
+          429,
+          undefined,
+          {
+            plan: body.plan,
+            limit: body.limit,
+            used: body.used,
+            resetAt,
+            upgrade: body.upgrade,
+          }
+        );
+      }
+
       const ra = resp.headers.get("Retry-After");
       const retryAfterSeconds = ra ? Math.max(1, parseInt(ra, 10) || 0) : undefined;
       throw new ApiError(
@@ -90,6 +169,7 @@ export async function extractRecipeFromUrl(url: string, caption?: string) {
     }
 
     const data = await resp.json();
+
     if (!data?.ok) {
       // Backend used {ok:false, error:"..."}
       const msg = typeof data?.error === "string" ? data.error : "Extraction failed.";
@@ -142,7 +222,9 @@ export async function extractRecipeFromUrl(url: string, caption?: string) {
       return {
         title: String(r.title || "").trim() || "Untitled recipe",
         creator:
-          typeof data.creator === "string" && data.creator.trim() ? data.creator.trim() : "@tiktok_chef",
+          typeof data.creator === "string" && data.creator.trim()
+            ? data.creator.trim()
+            : "@tiktok_chef",
         thumbnail_url: thumb,
         ingredients,
         steps,
@@ -154,18 +236,49 @@ export async function extractRecipeFromUrl(url: string, caption?: string) {
     // LEGACY CONTRACT
     // -------------------------
     if (data?.result) {
-      const result = data.result;
+      const r = data.result;
+
+      const ingredients: Ingredient[] = Array.isArray(r.ingredients)
+        ? r.ingredients.map((ing: any) => ({
+            name: String(ing.name || ing.label || "").trim() || "Ingredient",
+            quantity: ing.quantity ?? "",
+            unit: String(ing.unit || "").trim() || "",
+            raw_text: String(ing.raw_text || "").trim(),
+            normalized_name: ing.normalized_name,
+            foodon_id: ing.foodon_id,
+          }))
+        : [];
+
+      const steps: Step[] = Array.isArray(r.steps)
+        ? r.steps.map((s: any, i: number) => ({
+            step_number: s.step_number ?? i + 1,
+            instruction: String(s.instruction || s || "").trim(),
+            timestamp_start: s.timestamp_start ?? 0,
+            timestamp_end: s.timestamp_end ?? 0,
+          }))
+        : [];
+
+      const thumb =
+        typeof data.thumbnail_url === "string" && data.thumbnail_url.trim()
+          ? data.thumbnail_url.trim()
+          : fallbackThumbnail;
+
       return {
-        ...result,
-        sources: data.sources || [url],
-        thumbnail_url: result.thumbnail_url || fallbackThumbnail,
+        title: String(r.title || "").trim() || "Untitled recipe",
+        creator:
+          typeof data.creator === "string" && data.creator.trim()
+            ? data.creator.trim()
+            : "@tiktok_chef",
+        thumbnail_url: thumb,
+        ingredients,
+        steps,
+        sources: Array.isArray(data.sources) ? data.sources : [{ title: url, uri: url }],
       };
     }
 
     return null;
   } catch (e: any) {
     if (e instanceof ApiError) throw e;
-
     console.error("extractRecipeFromUrl failed:", e);
     throw new ApiError("Network error.", "NETWORK_ERROR");
   }

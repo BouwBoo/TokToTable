@@ -14,6 +14,8 @@ const path = require("path");
 // - module.exports = function(req,res){...}
 const extractModule = require("./api/extract.cjs");
 const imageModule = require("./api/image.cjs");
+const monetization = require("./api/monetization.cjs");
+
 
 const extractHandler = extractModule.handleExtract || extractModule;
 const imageHandler = imageModule.handleImage || imageModule;
@@ -71,14 +73,27 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ✅ Extract
-  if (pathname === "/api/extract") {
-    if (req.method !== "POST") return json(res, 405, { error: "Method not allowed" });
-    try {
-      return await callHandler(extractHandler, req, res);
-    } catch (err) {
-      return json(res, 500, { error: "Extract handler failed", detail: String(err) });
-    }
+if (pathname === "/api/extract") {
+  if (req.method !== "POST") return json(res, 405, { error: "Method not allowed" });
+
+  // V3 gate: enforce limits BEFORE calling extract handler
+  const gate = monetization.checkAndIncrementExtract(req);
+  if (!gate.ok) {
+    // Optional: log for visibility
+    console.log("[V3 gate] blocked", gate.payload);
+    return json(res, gate.status, gate.payload);
   }
+
+  // Optional: log usage
+  console.log("[V3 gate] allow", { plan: gate.plan, used: gate.used, limit: gate.limit, resetAt: gate.resetAt });
+
+  try {
+    return await callHandler(extractHandler, req, res);
+  } catch (err) {
+    return json(res, 500, { error: "Extract handler failed", detail: String(err) });
+  }
+}
+
 
   // ✅ Image endpoint (existing)
   if (pathname === "/api/image") {
