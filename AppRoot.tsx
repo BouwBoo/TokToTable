@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { Recipe } from "./types";
 
 import Navbar from "./components/Navbar";
@@ -18,6 +18,53 @@ import { usePlanner } from "./hooks/usePlanner";
 const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"] as const;
 
 type View = "dashboard" | "planner" | "shopping" | "settings";
+
+type BillingPath = "/billing/success" | "/billing/cancel";
+
+const BillingReturn: React.FC<{ pathname: BillingPath }> = ({ pathname }) => {
+  const params = typeof window !== "undefined" ? new URLSearchParams(window.location.search) : new URLSearchParams();
+  const sessionId = params.get("session_id") || "";
+
+  const isSuccess = pathname === "/billing/success";
+
+  // ✅ UX-only: auto return to app after success
+  useEffect(() => {
+    if (!isSuccess) return;
+    const t = window.setTimeout(() => {
+      window.location.href = "/app";
+    }, 1500);
+    return () => window.clearTimeout(t);
+  }, [isSuccess]);
+
+  return (
+    <div className="min-h-screen bg-[#070A18] text-slate-100 flex items-center justify-center px-6">
+      <div className="glass-panel w-full max-w-xl p-8 rounded-[32px] border-white/10">
+        <h1 className="text-3xl font-black mb-3">{isSuccess ? "✅ Payment successful" : "❌ Payment cancelled"}</h1>
+
+        {isSuccess ? (
+          <p className="text-slate-300 mb-4">Thanks! Redirecting you back to TokToTable…</p>
+        ) : (
+          <p className="text-slate-300 mb-4">No worries — nothing was charged.</p>
+        )}
+
+        {isSuccess && sessionId ? (
+          <p className="text-xs text-slate-500 mb-6">
+            Session: <code className="text-slate-200">{sessionId}</code>
+          </p>
+        ) : (
+          <div className="mb-6" />
+        )}
+
+        <button
+          onClick={() => (window.location.href = "/app")}
+          className="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl font-black transition-all shadow-lg shadow-emerald-900/20"
+        >
+          Back to app
+        </button>
+      </div>
+    </div>
+  );
+};
 
 const App: React.FC = () => {
   const [currentView, setCurrentView] = useState<View>("dashboard");
@@ -48,41 +95,9 @@ const App: React.FC = () => {
   const { shoppingList, generateFromPlanner, toggle, reset, clear } = useShoppingList();
 
   // ✅ MINIMAL: handle Stripe return paths without adding a router
-  const pathname = typeof window !== "undefined" ? window.location.pathname : "";
+  const pathname = typeof window !== "undefined" ? (window.location.pathname as string) : "";
   if (pathname === "/billing/success" || pathname === "/billing/cancel") {
-    const params = typeof window !== "undefined" ? new URLSearchParams(window.location.search) : new URLSearchParams();
-    const sessionId = params.get("session_id") || "";
-
-    const isSuccess = pathname === "/billing/success";
-
-    return (
-      <div className="min-h-screen bg-[#070A18] text-slate-100 flex items-center justify-center px-6">
-        <div className="glass-panel w-full max-w-xl p-8 rounded-[32px] border-white/10">
-          <h1 className="text-3xl font-black mb-3">{isSuccess ? "✅ Payment successful" : "❌ Payment cancelled"}</h1>
-
-          {isSuccess ? (
-            <p className="text-slate-300 mb-4">Thanks! You can close this page and return to TokToTable.</p>
-          ) : (
-            <p className="text-slate-300 mb-4">No worries — nothing was charged.</p>
-          )}
-
-          {isSuccess && sessionId ? (
-            <p className="text-xs text-slate-500 mb-6">
-              Session: <code className="text-slate-200">{sessionId}</code>
-            </p>
-          ) : (
-            <div className="mb-6" />
-          )}
-
-          <button
-            onClick={() => (window.location.href = "/")}
-            className="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl font-black transition-all shadow-lg shadow-emerald-900/20"
-          >
-            Back to app
-          </button>
-        </div>
-      </div>
-    );
+    return <BillingReturn pathname={pathname as BillingPath} />;
   }
 
   const handleDeleteRecipe = (id: string, e: React.MouseEvent) => {
