@@ -63,11 +63,24 @@ function getAnonId(): string {
 }
 
 function baseHeaders(): Record<string, string> {
-  return {
+  const headers: Record<string, string> = {
     "Content-Type": "application/json",
     "x-ttt-user": getAnonId(),
   };
+
+  // Dev-only plan override (used by Settings Pricing block)
+  try {
+    const plan = localStorage.getItem("ttt_plan_override");
+    if (plan === "pro" || plan === "free") {
+      headers["x-ttt-plan"] = plan;
+    }
+  } catch {
+    // ignore
+  }
+
+  return headers;
 }
+
 
 /**
  * Frontend calls backend endpoint that generates an image (mock for now).
