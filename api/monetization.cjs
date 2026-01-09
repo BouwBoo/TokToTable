@@ -1,18 +1,15 @@
 // api/monetization.cjs
-// Minimal monetization layer for local dev (V3 start).
-// Server-side enforced limits (in-memory store).
-// No DB, no auth yet.
+// Minimal monetization layer (V3).
+// Server-side enforced limits with persistent counters (SQLite via usageStore).
 
 const crypto = require("crypto");
+const usageStore = require("./usageStore.cjs");
 
 // ----------------------------
 // Limits (from V3 contract)
 // ----------------------------
 const FREE_WEEKLY_EXTRACT_LIMIT = Number(process.env.FREE_WEEKLY_EXTRACT_LIMIT || 5);
 const PRO_MONTHLY_EXTRACT_LIMIT = Number(process.env.PRO_MONTHLY_EXTRACT_LIMIT || 200);
-
-// In-memory counters: key -> { count, resetAtIso }
-const counters = new Map();
 
 // ----------------------------
 // Helpers: plan + user id
@@ -23,7 +20,7 @@ function getPlan(req) {
   const forced = String(process.env.TTT_FORCE_PLAN || "").trim().toLowerCase();
   if (forced === "pro" || forced === "free") return forced;
 
-  // Optional header override for dev tooling
+  // Optional header override (used by Settings dev toggle)
   const h = String(req.headers["x-ttt-plan"] || "").trim().toLowerCase();
   if (h === "pro" || h === "free") return h;
 
@@ -72,7 +69,7 @@ function startOfNextMonth(d) {
 }
 
 // ----------------------------
-// Gate + increment
+// Gate + increment (persistent)
 // ----------------------------
 function checkAndIncrementExtract(req) {
   const now = new Date();
@@ -96,11 +93,14 @@ function checkAndIncrementExtract(req) {
   }
 
   const key = `${userId}:extract:${periodKey}`;
+  const expectedResetAtIso = resetAt.toISOString();
 
-  const current = counters.get(key) || { count: 0, resetAtIso: resetAt.toISOString() };
-  const nextCount = current.count + 1;
+  // Optional housekeeping (cheap)
+  usageStore.cleanupExpired();
 
-  if (nextCount > limit) {
+  const r = usageStore.incrWithLimit(key, limit, expectedResetAtIso);
+
+  if (!r.ok) {
     return {
       ok: false,
       status: 429,
@@ -109,23 +109,21 @@ function checkAndIncrementExtract(req) {
         error: "limit_reached",
         plan,
         limit,
-        used: current.count,
-        resetAt: current.resetAtIso,
+        used: r.used,
+        resetAt: r.resetAtIso,
         upgrade: plan === "free",
       },
-      debug: { userId, key },
+      debug: { userId, key, db: usageStore.DB_PATH },
     };
   }
-
-  counters.set(key, { count: nextCount, resetAtIso: current.resetAtIso });
 
   return {
     ok: true,
     plan,
     limit,
-    used: nextCount,
-    resetAt: current.resetAtIso,
-    debug: { userId, key },
+    used: r.used,
+    resetAt: r.resetAtIso,
+    debug: { userId, key, db: usageStore.DB_PATH },
   };
 }
 
