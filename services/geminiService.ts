@@ -131,7 +131,7 @@ export async function extractRecipeFromUrl(url: string, caption?: string) {
 
     // 2) Backend guard: if mismatch (409) and we had a caption, retry once without caption
     if (resp.status === 409 && hasCaption) {
-      console.warn("extractRecipeFromUrl: context mismatch, retrying without caption");
+      (typeof (globalThis as any).process !== "undefined" && (globalThis as any).process.env?.NODE_ENV !== "production") && console.warn("extractRecipeFromUrl: context mismatch, retrying without caption");
       resp = await doRequest(undefined);
     }
 

@@ -95,12 +95,12 @@ const server = http.createServer(async (req, res) => {
     const gate = monetization.checkAndIncrementExtract(req);
     if (!gate.ok) {
       // Optional: log for visibility
-      console.log("[V3 gate] blocked", gate.payload);
+      process.env.NODE_ENV !== "production" && console.log("[V3 gate] blocked", gate.payload);
       return json(res, gate.status, gate.payload);
     }
 
     // Optional: log usage
-    console.log("[V3 gate] allow", { plan: gate.plan, used: gate.used, limit: gate.limit, resetAt: gate.resetAt });
+    process.env.NODE_ENV !== "production" && console.log("[V3 gate] allow", { plan: gate.plan, used: gate.used, limit: gate.limit, resetAt: gate.resetAt });
 
     try {
       return await callHandler(extractHandler, req, res);
@@ -159,7 +159,7 @@ const server = http.createServer(async (req, res) => {
           customer_id: s.customer,
           subscription_id: s.subscription,
         });
-        console.log("[stripe] checkout.session.completed -> pro_enabled=true", {
+        process.env.NODE_ENV !== "production" && console.log("[stripe] checkout.session.completed -> pro_enabled=true", {
           session_id: s.id,
           customer: s.customer,
           subscription: s.subscription,
@@ -222,6 +222,6 @@ const server = http.createServer(async (req, res) => {
 const PORT = process.env.API_PORT || 8787;
 
 server.listen(PORT, "127.0.0.1", () => {
-  console.log(`API server running at http://127.0.0.1:${PORT}`);
-  console.log(`Health check:      http://127.0.0.1:${PORT}/api/health`);
+  process.env.NODE_ENV !== "production" && console.log(`API server running at http://127.0.0.1:${PORT}`);
+  process.env.NODE_ENV !== "production" && console.log(`Health check:      http://127.0.0.1:${PORT}/api/health`);
 });

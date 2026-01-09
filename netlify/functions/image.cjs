@@ -128,7 +128,7 @@ exports.handler = async (event) => {
 
   const dataUrl = `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`;
 
-  console.log(JSON.stringify({ reqId, ip, ok: true, endpoint: "image" }));
+  process.env.NODE_ENV !== "production" && console.log(JSON.stringify({ reqId, ip, ok: true, endpoint: "image" }));
 
   return json(
     200,
