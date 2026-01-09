@@ -13,15 +13,24 @@ const path = require("path");
 // - module.exports = { handleExtract(...) }
 // - module.exports = function(req,res){...}
 const extractModule = require("./api/extract.cjs");
-const imageModule = require("./api/image.cjs");
 const monetization = require("./api/monetization.cjs");
 
+const extractHandler =
+  typeof extractModule === "function"
+    ? extractModule
+    : typeof extractModule.handleExtract === "function"
+      ? extractModule.handleExtract
+      : extractModule.default;
 
-const extractHandler = extractModule.handleExtract || extractModule;
-const imageHandler = imageModule.handleImage || imageModule;
+const imageHandler =
+  typeof extractModule.handleImage === "function"
+    ? extractModule.handleImage
+    : typeof extractModule.imageHandler === "function"
+      ? extractModule.imageHandler
+      : null;
 
-function json(res, statusCode, payload) {
-  res.statusCode = statusCode;
+function json(res, status, payload) {
+  res.statusCode = status;
   res.setHeader("Content-Type", "application/json");
   res.end(JSON.stringify(payload));
 }
@@ -35,27 +44,33 @@ function readBody(req) {
   });
 }
 
+function readRawBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    req.on("data", (c) => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c)));
+    req.on("end", () => resolve(Buffer.concat(chunks)));
+    req.on("error", reject);
+  });
+}
+
 async function callHandler(handler, req, res) {
   // If handler expects (req, res, body), we provide it.
   if (typeof handler !== "function") {
-    return json(res, 500, { error: "Handler is not a function" });
+    throw new Error("Handler is not a function");
   }
-
-  if (handler.length >= 3) {
-    const body = await readBody(req);
-    return handler(req, res, body);
-  }
-
-  // Otherwise handler can read req itself.
+  const body = await readBody(req);
+  if (handler.length >= 3) return handler(req, res, body);
   return handler(req, res);
 }
 
-function sendFile(res, filePath, contentType = "application/octet-stream") {
-  res.statusCode = 200;
-  res.setHeader("Content-Type", contentType);
-  res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
-  res.setHeader("X-Content-Type-Options", "nosniff");
-  fs.createReadStream(filePath).pipe(res);
+function sendFile(res, filePath, contentType) {
+  try {
+    const buf = fs.readFileSync(filePath);
+    res.writeHead(200, { "Content-Type": contentType });
+    res.end(buf);
+  } catch (err) {
+    json(res, 404, { error: "Not found" });
+  }
 }
 
 const FALLBACK_IMAGE = path.join(__dirname, "public", "image-fallback.jpg");
@@ -73,49 +88,95 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ✅ Extract
-if (pathname === "/api/extract") {
-  if (req.method !== "POST") return json(res, 405, { error: "Method not allowed" });
+  if (pathname === "/api/extract") {
+    if (req.method !== "POST") return json(res, 405, { error: "Method not allowed" });
 
-  // V3 gate: enforce limits BEFORE calling extract handler
-  const gate = monetization.checkAndIncrementExtract(req);
-  if (!gate.ok) {
-    // Optional: log for visibility
-    console.log("[V3 gate] blocked", gate.payload);
-    return json(res, gate.status, gate.payload);
+    // V3 gate: enforce limits BEFORE calling extract handler
+    const gate = monetization.checkAndIncrementExtract(req);
+    if (!gate.ok) {
+      // Optional: log for visibility
+      console.log("[V3 gate] blocked", gate.payload);
+      return json(res, gate.status, gate.payload);
+    }
+
+    // Optional: log usage
+    console.log("[V3 gate] allow", { plan: gate.plan, used: gate.used, limit: gate.limit, resetAt: gate.resetAt });
+
+    try {
+      return await callHandler(extractHandler, req, res);
+    } catch (err) {
+      return json(res, 500, { error: "Extract handler failed", detail: String(err) });
+    }
   }
 
-  // Optional: log usage
-  console.log("[V3 gate] allow", { plan: gate.plan, used: gate.used, limit: gate.limit, resetAt: gate.resetAt });
+  // ✅ Stripe checkout (Checkpoint 1)
+  if (pathname === "/api/stripe/checkout" && req.method === "POST") {
+    const Stripe = require("stripe");
+    const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
-  try {
-    return await callHandler(extractHandler, req, res);
-  } catch (err) {
-    return json(res, 500, { error: "Extract handler failed", detail: String(err) });
+    const session = await stripe.checkout.sessions.create({
+      mode: "subscription",
+      line_items: [
+        {
+          price: process.env.STRIPE_PRICE_ID,
+          quantity: 1,
+        },
+      ],
+      // ✅ redirect back into the app
+      success_url: `${process.env.APP_ORIGIN}/billing/success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${process.env.APP_ORIGIN}/billing/cancel`,
+    });
+
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ url: session.url }));
+    return;
   }
-}
 
-if (pathname === "/api/stripe/checkout" && req.method === "POST") {
-  const Stripe = require("stripe");
-  const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+  // ✅ Stripe webhook (Checkpoint A: mark Pro)
+  if (pathname === "/api/stripe/webhook" && req.method === "POST") {
+    try {
+      const Stripe = require("stripe");
+      const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
-  const session = await stripe.checkout.sessions.create({
-    mode: "subscription",
-    line_items: [
-      {
-        price: process.env.STRIPE_PRICE_ID,
-        quantity: 1,
-      },
-    ],
-    success_url: `${process.env.APP_ORIGIN}/billing/success?session_id={CHECKOUT_SESSION_ID}`,
-    cancel_url: `${process.env.APP_ORIGIN}/billing/cancel`,
-  });
+      const sig = req.headers["stripe-signature"];
+      if (!sig) return json(res, 400, { ok: false, error: "Missing stripe-signature header" });
 
-  res.writeHead(200, { "Content-Type": "application/json" });
-  res.end(JSON.stringify({ url: session.url }));
-  return;
-}
+      const rawBody = await readRawBody(req);
 
+      let event;
+      try {
+        event = stripe.webhooks.constructEvent(rawBody, sig, process.env.STRIPE_WEBHOOK_SECRET);
+      } catch (err) {
+        return json(res, 400, { ok: false, error: "Invalid signature", detail: String(err) });
+      }
 
+      const store = require("./api/stripeStore.cjs");
+
+      if (event.type === "checkout.session.completed") {
+        const s = event.data.object;
+        store.markPro({
+          session_id: s.id,
+          customer_id: s.customer,
+          subscription_id: s.subscription,
+        });
+        console.log("[stripe] checkout.session.completed -> pro_enabled=true", {
+          session_id: s.id,
+          customer: s.customer,
+          subscription: s.subscription,
+        });
+      }
+
+      return json(res, 200, { received: true });
+    } catch (err) {
+      return json(res, 500, { ok: false, error: "Webhook handler failed", detail: String(err) });
+    }
+  }
+
+  // ✅ Billing status (dev)
+  if (pathname === "/api/billing/status" && req.method === "GET") {
+    const store = require("./api/stripeStore.cjs");
+    return json(res, 200, store.getStatus());
+  }
 
   // ✅ Image endpoint (existing)
   if (pathname === "/api/image") {
@@ -131,18 +192,18 @@ if (pathname === "/api/stripe/checkout" && req.method === "POST") {
   if (pathname.startsWith("/api/thumb/")) {
     if (req.method !== "GET") return json(res, 405, { error: "Method not allowed" });
 
-    const id = pathname.split("/").pop();
-    if (!id) return json(res, 400, { error: "Missing id" });
-
+    const id = pathname.replace("/api/thumb/", "");
     const cacheDir = path.join(__dirname, ".cache", "images");
-    const metaPath = path.join(cacheDir, `${id}.json`);
+    const f1 = path.join(cacheDir, `${id}.jpg`);
+    const f2 = path.join(cacheDir, `${id}.jpeg`);
+    const f3 = path.join(cacheDir, `${id}.png`);
+    const f4 = path.join(cacheDir, `${id}.webp`);
 
     try {
-      const meta = JSON.parse(fs.readFileSync(metaPath, "utf8"));
-      const filePath = path.join(cacheDir, meta.fileName);
-      if (fs.existsSync(filePath)) {
-        return sendFile(res, filePath, meta.contentType || "image/jpeg");
-      }
+      if (fs.existsSync(f1)) return sendFile(res, f1, "image/jpeg");
+      if (fs.existsSync(f2)) return sendFile(res, f2, "image/jpeg");
+      if (fs.existsSync(f3)) return sendFile(res, f3, "image/png");
+      if (fs.existsSync(f4)) return sendFile(res, f4, "image/webp");
     } catch {
       // fallthrough
     }
