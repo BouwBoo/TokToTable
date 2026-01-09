@@ -265,12 +265,22 @@ const Settings: React.FC<SettingsProps> = ({ onClearRecipes, onClearPlanner }) =
               <li>• Sync & history (coming)</li>
             </ul>
 
-              <button
-                onClick={handleUpgradeCheckout}
-                className="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl font-black transition-all shadow-lg shadow-emerald-900/20"
-              >
-                Upgrade to Pro
-              </button>
+              {plan === "pro" ? (
+                <button
+                  disabled
+                  className="w-full py-3 bg-emerald-600/60 text-white rounded-xl font-black transition-all opacity-80 cursor-not-allowed"
+                >
+                  Pro active
+                </button>
+              ) : (
+                <button
+                  onClick={handleUpgradeCheckout}
+                  className="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl font-black transition-all shadow-lg shadow-emerald-900/20"
+                >
+                  Upgrade to Pro
+                </button>
+              )}
+
 
             <div className="flex gap-2">
               {plan !== "pro" ? (
