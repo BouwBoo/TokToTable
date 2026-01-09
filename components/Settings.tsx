@@ -65,6 +65,21 @@ const Settings: React.FC<SettingsProps> = ({ onClearRecipes, onClearPlanner }) =
     window.location.reload();
   };
 
+  const handleUpgradeCheckout = async () => {
+  const res = await fetch("/api/stripe/checkout", {
+    method: "POST",
+  });
+
+  const data = await res.json();
+
+  if (data?.url) {
+    window.location.href = data.url;
+  } else {
+    alert("Failed to start Stripe checkout");
+  }
+};
+
+
   return (
     <div className="max-w-4xl mx-auto space-y-8 animate-fadeIn">
       <div className="text-center mb-12">
@@ -250,13 +265,12 @@ const Settings: React.FC<SettingsProps> = ({ onClearRecipes, onClearPlanner }) =
               <li>• Sync & history (coming)</li>
             </ul>
 
-            <button
-              disabled
-              className="w-full py-3 bg-emerald-600/60 text-white rounded-xl font-black transition-all opacity-80 cursor-not-allowed"
-              title="Stripe checkout will be wired next"
-            >
-              Upgrade to Pro (coming soon)
-            </button>
+              <button
+                onClick={handleUpgradeCheckout}
+                className="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl font-black transition-all shadow-lg shadow-emerald-900/20"
+              >
+                Upgrade to Pro
+              </button>
 
             <div className="flex gap-2">
               {plan !== "pro" ? (
