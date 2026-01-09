@@ -11,6 +11,11 @@ const Settings: React.FC<SettingsProps> = ({ onClearRecipes, onClearPlanner }) =
   const [hasKey, setHasKey] = useState<boolean>(false);
   const [plan, setPlan] = useState<Plan>("free");
 
+    const isDev =
+    typeof window !== "undefined" &&
+    window.location.hostname === "localhost";
+
+
   useEffect(() => {
     const checkKey = async () => {
       // @ts-ignore
@@ -239,14 +244,15 @@ const Settings: React.FC<SettingsProps> = ({ onClearRecipes, onClearPlanner }) =
               >
                 Keep Free
               </button>
-            ) : (
-              <button
-                onClick={() => setPlanOverride("free")}
-                className="w-full py-3 bg-white/10 hover:bg-white/15 text-white rounded-xl font-bold transition-all"
-              >
-                Switch to Free (dev)
-              </button>
-            )}
+                ) : isDev ? (
+                  <button
+                    onClick={() => setPlanOverride("free")}
+                    className="w-full py-3 bg-white/10 hover:bg-white/15 text-white rounded-xl font-bold transition-all"
+                  >
+                    Switch to Free (dev)
+                  </button>
+                ) : null
+                }
           </div>
 
           {/* PRO */}
@@ -281,7 +287,7 @@ const Settings: React.FC<SettingsProps> = ({ onClearRecipes, onClearPlanner }) =
                 </button>
               )}
 
-
+{isDev && (
             <div className="flex gap-2">
               {plan !== "pro" ? (
                 <button
@@ -307,13 +313,14 @@ const Settings: React.FC<SettingsProps> = ({ onClearRecipes, onClearPlanner }) =
                 Reset
               </button>
             </div>
-
+)}
             <p className="text-[10px] text-slate-500 leading-tight">
               AI costs money. Pro keeps TokToTable sustainable. (Checkout wiring comes next.)
             </p>
           </div>
         </div>
 
+{isDev && (
         <div className="p-4 rounded-2xl bg-white/5 border border-white/10">
           <p className="text-[10px] text-slate-400 leading-tight">
             <i className="fa-solid fa-circle-info mr-1"></i>
@@ -321,6 +328,7 @@ const Settings: React.FC<SettingsProps> = ({ onClearRecipes, onClearPlanner }) =
             <code className="text-slate-200">x-ttt-plan</code> on requests.
           </p>
         </div>
+        )}
       </section>
 
       <div className="text-center pt-8 border-t border-white/5">
