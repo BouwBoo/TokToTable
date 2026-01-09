@@ -42,17 +42,48 @@ const App: React.FC = () => {
     errorMeta,
   } = useRecipes();
 
-  const {
-    planner,
-    showPickerForDay,
-    setShowPickerForDay,
-    addToPlanner,
-    removeFromPlanner,
-    removeRecipeEverywhere,
-    clearPlanner,
-  } = usePlanner();
+  const { planner, showPickerForDay, setShowPickerForDay, addToPlanner, removeFromPlanner, removeRecipeEverywhere, clearPlanner } =
+    usePlanner();
 
   const { shoppingList, generateFromPlanner, toggle, reset, clear } = useShoppingList();
+
+  // ✅ MINIMAL: handle Stripe return paths without adding a router
+  const pathname = typeof window !== "undefined" ? window.location.pathname : "";
+  if (pathname === "/billing/success" || pathname === "/billing/cancel") {
+    const params = typeof window !== "undefined" ? new URLSearchParams(window.location.search) : new URLSearchParams();
+    const sessionId = params.get("session_id") || "";
+
+    const isSuccess = pathname === "/billing/success";
+
+    return (
+      <div className="min-h-screen bg-[#070A18] text-slate-100 flex items-center justify-center px-6">
+        <div className="glass-panel w-full max-w-xl p-8 rounded-[32px] border-white/10">
+          <h1 className="text-3xl font-black mb-3">{isSuccess ? "✅ Payment successful" : "❌ Payment cancelled"}</h1>
+
+          {isSuccess ? (
+            <p className="text-slate-300 mb-4">Thanks! You can close this page and return to TokToTable.</p>
+          ) : (
+            <p className="text-slate-300 mb-4">No worries — nothing was charged.</p>
+          )}
+
+          {isSuccess && sessionId ? (
+            <p className="text-xs text-slate-500 mb-6">
+              Session: <code className="text-slate-200">{sessionId}</code>
+            </p>
+          ) : (
+            <div className="mb-6" />
+          )}
+
+          <button
+            onClick={() => (window.location.href = "/")}
+            className="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl font-black transition-all shadow-lg shadow-emerald-900/20"
+          >
+            Back to app
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   const handleDeleteRecipe = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -89,11 +120,7 @@ const App: React.FC = () => {
     const isLimit = errorKind === "limit";
     const isRateLimit = errorKind === "rate_limit";
 
-    const title = isLimit
-      ? "Free limit reached"
-      : isRateLimit
-      ? "Even wachten…"
-      : "Extraction Failed";
+    const title = isLimit ? "Free limit reached" : isRateLimit ? "Even wachten…" : "Extraction Failed";
 
     // Prefer the detailed errorMessage from hook; fallback otherwise.
     const message =
@@ -172,10 +199,7 @@ const App: React.FC = () => {
               </p>
             </div>
 
-            <UrlInput
-              onExtract={extractFromUrl}
-              isLoading={processingState !== "idle" && processingState !== "error"}
-            />
+            <UrlInput onExtract={extractFromUrl} isLoading={processingState !== "idle" && processingState !== "error"} />
 
             {["fetching", "analyzing", "synthesizing"].includes(processingState) ? (
               <div className="py-12">
@@ -264,10 +288,7 @@ const App: React.FC = () => {
 
             <div className="grid grid-cols-1 md:grid-cols-7 gap-4">
               {DAYS.map((day) => (
-                <div
-                  key={day}
-                  className="glass-panel p-4 rounded-2xl min-h-[350px] flex flex-col border-white/5 bg-slate-900/40"
-                >
+                <div key={day} className="glass-panel p-4 rounded-2xl min-h-[350px] flex flex-col border-white/5 bg-slate-900/40">
                   <h4 className="font-bold text-slate-400 mb-4 pb-2 border-b border-white/10 text-center uppercase text-[10px] tracking-widest">
                     {day}
                   </h4>
@@ -342,11 +363,7 @@ const App: React.FC = () => {
                     onClick={() => addToPlanner(showPickerForDay, r.id)}
                     className="w-full text-left p-3 rounded-xl hover:bg-white/5 border border-transparent hover:border-white/10 transition-all flex gap-4 items-center group"
                   >
-                    <img
-                      src={r.thumbnail_url}
-                      className="w-14 h-14 rounded-lg object-cover group-hover:scale-105 transition-transform"
-                      alt=""
-                    />
+                    <img src={r.thumbnail_url} className="w-14 h-14 rounded-lg object-cover group-hover:scale-105 transition-transform" alt="" />
                     <div className="flex-1 overflow-hidden">
                       <p className="font-bold text-sm truncate">{r.title}</p>
                       <p className="text-[10px] text-slate-500 uppercase tracking-tighter">{r.creator}</p>
