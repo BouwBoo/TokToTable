@@ -6,6 +6,11 @@ interface NavbarProps {
 }
 
 const Navbar: React.FC<NavbarProps> = ({ onSetView, currentView }) => {
+  const isPro =
+    typeof window !== 'undefined' &&
+    typeof window.localStorage !== 'undefined' &&
+    window.localStorage.getItem('ttt_plan_override') === 'pro';
+
   return (
     <nav className="sticky top-0 z-50 glass-panel border-b border-white/10 px-6 py-4 flex justify-between items-center">
       <div className="flex items-center gap-3">
@@ -15,13 +20,23 @@ const Navbar: React.FC<NavbarProps> = ({ onSetView, currentView }) => {
         >
           <i className="fa-solid fa-concierge-bell text-white text-xl"></i>
         </div>
+
         <div>
-          <h1
-            className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-white to-slate-400 cursor-pointer"
-            onClick={() => onSetView('dashboard')}
-          >
-            TokToTable
-          </h1>
+          <div className="flex items-center gap-2">
+            <h1
+              className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-white to-slate-400 cursor-pointer"
+              onClick={() => onSetView('dashboard')}
+            >
+              TokToTable
+            </h1>
+
+            {isPro && (
+              <span className="text-[10px] font-black uppercase px-2 py-1 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                PRO
+              </span>
+            )}
+          </div>
+
           <p className="text-[10px] uppercase tracking-widest text-slate-500 font-semibold">Multimodal Extraction</p>
         </div>
       </div>
