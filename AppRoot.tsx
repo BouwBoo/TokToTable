@@ -1,26 +1,26 @@
-import React, { useState } from 'react';
-import { Recipe } from './types';
+import React, { useState } from "react";
+import { Recipe } from "./types";
 
-import Navbar from './components/Navbar';
-import UrlInput from './components/UrlInput';
-import RecipeCard from './components/RecipeCard';
-import RecipeEditor from './components/RecipeEditor';
-import Settings from './components/Settings';
-import ProcessingVisualizer from './components/ProcessingVisualizer';
+import Navbar from "./components/Navbar";
+import UrlInput from "./components/UrlInput";
+import RecipeCard from "./components/RecipeCard";
+import RecipeEditor from "./components/RecipeEditor";
+import Settings from "./components/Settings";
+import ProcessingVisualizer from "./components/ProcessingVisualizer";
 
 // Shopping List (NEW)
-import ShoppingListView from './components/ShoppingListView';
-import { useShoppingList } from './hooks/useShoppingList';
+import ShoppingListView from "./components/ShoppingListView";
+import { useShoppingList } from "./hooks/useShoppingList";
 
-import { useRecipes } from './hooks/useRecipes';
-import { usePlanner } from './hooks/usePlanner';
+import { useRecipes } from "./hooks/useRecipes";
+import { usePlanner } from "./hooks/usePlanner";
 
-const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'] as const;
+const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"] as const;
 
-type View = 'dashboard' | 'planner' | 'shopping' | 'settings';
+type View = "dashboard" | "planner" | "shopping" | "settings";
 
 const App: React.FC = () => {
-  const [currentView, setCurrentView] = useState<View>('dashboard');
+  const [currentView, setCurrentView] = useState<View>("dashboard");
 
   const {
     recipes,
@@ -37,6 +37,9 @@ const App: React.FC = () => {
     deleteRecipe,
     clearAll,
     dismissError,
+    errorMessage,
+    errorKind,
+    errorMeta,
   } = useRecipes();
 
   const {
@@ -53,7 +56,7 @@ const App: React.FC = () => {
 
   const handleDeleteRecipe = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (confirm('Wil je dit recept definitief verwijderen uit je kluis?')) {
+    if (confirm("Wil je dit recept definitief verwijderen uit je kluis?")) {
       deleteRecipe(id);
       removeRecipeEverywhere(id);
     }
@@ -63,17 +66,91 @@ const App: React.FC = () => {
     clearAll(); // wist recipes storage
     clearPlanner(); // planner ook leeg
     clear(); // shopping list ook leeg
-    alert('Recipe Vault cleared.');
+    alert("Recipe Vault cleared.");
   };
 
   const handleClearPlanner = () => {
     clearPlanner();
-    alert('Meal Planner cleared.');
+    alert("Meal Planner cleared.");
   };
 
   const handleGenerateShopping = () => {
     generateFromPlanner(planner, recipes);
-    setCurrentView('shopping');
+    setCurrentView("shopping");
+  };
+
+  const handleUpgradeClick = () => {
+    // Placeholder flow for now: take user to Settings where we’ll later wire Stripe.
+    setCurrentView("settings");
+    dismissError();
+  };
+
+  const renderErrorToast = () => {
+    const isLimit = errorKind === "limit";
+    const isRateLimit = errorKind === "rate_limit";
+
+    const title = isLimit
+      ? "Free limit reached"
+      : isRateLimit
+      ? "Even wachten…"
+      : "Extraction Failed";
+
+    // Prefer the detailed errorMessage from hook; fallback otherwise.
+    const message =
+      errorMessage ||
+      (isLimit
+        ? "Je Free-limiet is bereikt. Upgrade naar Pro om door te gaan."
+        : isRateLimit
+        ? "Te veel requests. Wacht even en probeer opnieuw."
+        : "Could not find recipe data for this video. Try another link.");
+
+    // Nice small subline for limit
+    const sub =
+      isLimit && errorMeta
+        ? (() => {
+            const used = typeof errorMeta.used === "number" ? errorMeta.used : null;
+            const limit = typeof errorMeta.limit === "number" ? errorMeta.limit : null;
+            const resetAt = typeof errorMeta.resetAt === "string" ? errorMeta.resetAt : null;
+
+            const parts: string[] = [];
+            if (used !== null && limit !== null) parts.push(`${used}/${limit} extracts used`);
+            if (resetAt) {
+              const d = new Date(resetAt);
+              parts.push(`reset: ${d.toLocaleString()}`);
+            }
+            return parts.length ? parts.join(" • ") : null;
+          })()
+        : null;
+
+    return (
+      <div className="fixed bottom-10 left-1/2 -translate-x-1/2 bg-red-500 text-white px-8 py-4 rounded-2xl shadow-2xl flex items-center gap-4 z-[200] max-w-[92vw]">
+        <i className="fa-solid fa-circle-exclamation text-2xl"></i>
+
+        <div className="min-w-0">
+          <p className="font-bold">{title}</p>
+          <p className="text-xs opacity-90 break-words">{message}</p>
+          {sub && <p className="text-[10px] opacity-80 mt-1">{sub}</p>}
+        </div>
+
+        <div className="flex items-center gap-2">
+          {isLimit && (
+            <button
+              onClick={handleUpgradeClick}
+              className="bg-white text-red-600 hover:bg-white/90 px-4 py-1 rounded-lg font-black text-xs transition-all"
+            >
+              Upgrade to Pro
+            </button>
+          )}
+
+          <button
+            onClick={dismissError}
+            className="bg-white/20 hover:bg-white/30 px-4 py-1 rounded-lg font-bold text-xs transition-all"
+          >
+            Dismiss
+          </button>
+        </div>
+      </div>
+    );
   };
 
   return (
@@ -84,7 +161,7 @@ const App: React.FC = () => {
       <Navbar onSetView={setCurrentView} currentView={currentView} />
 
       <main className="container mx-auto px-6 pt-12">
-        {currentView === 'dashboard' && (
+        {currentView === "dashboard" && (
           <>
             <div className="text-center mb-12">
               <h2 className="text-4xl md:text-5xl font-black mb-4 tracking-tight">
@@ -95,9 +172,12 @@ const App: React.FC = () => {
               </p>
             </div>
 
-            <UrlInput onExtract={extractFromUrl} isLoading={processingState !== 'idle' && processingState !== 'error'} />
+            <UrlInput
+              onExtract={extractFromUrl}
+              isLoading={processingState !== "idle" && processingState !== "error"}
+            />
 
-            {['fetching', 'analyzing', 'synthesizing'].includes(processingState) ? (
+            {["fetching", "analyzing", "synthesizing"].includes(processingState) ? (
               <div className="py-12">
                 <ProcessingVisualizer />
               </div>
@@ -114,12 +194,12 @@ const App: React.FC = () => {
                   <div className="flex flex-wrap gap-4 items-center">
                     <div className="flex items-center gap-2 bg-white/5 p-1 rounded-lg border border-white/10">
                       <span className="text-[10px] uppercase font-bold text-slate-500 ml-2 mr-1">Filter</span>
-                      {(['all', 'extracted', 'validated'] as const).map(f => (
+                      {(["all", "extracted", "validated"] as const).map((f) => (
                         <button
                           key={f}
                           onClick={() => setFilter(f)}
                           className={`px-3 py-1 rounded-md text-[10px] font-bold uppercase transition-all ${
-                            filter === f ? 'bg-pink-500 text-white' : 'text-slate-400 hover:text-white'
+                            filter === f ? "bg-pink-500 text-white" : "text-slate-400 hover:text-white"
                           }`}
                         >
                           {f}
@@ -129,12 +209,12 @@ const App: React.FC = () => {
 
                     <div className="flex items-center gap-2 bg-white/5 p-1 rounded-lg border border-white/10">
                       <span className="text-[10px] uppercase font-bold text-slate-500 ml-2 mr-1">Sort</span>
-                      {(['date', 'title', 'status'] as const).map(s => (
+                      {(["date", "title", "status"] as const).map((s) => (
                         <button
                           key={s}
                           onClick={() => setSortBy(s)}
                           className={`px-3 py-1 rounded-md text-[10px] font-bold uppercase transition-all ${
-                            sortBy === s ? 'bg-cyan-500 text-white' : 'text-slate-400 hover:text-white'
+                            sortBy === s ? "bg-cyan-500 text-white" : "text-slate-400 hover:text-white"
                           }`}
                         >
                           {s}
@@ -148,12 +228,12 @@ const App: React.FC = () => {
                   <div className="text-center py-20 glass-panel rounded-3xl border-dashed border-2 border-white/5">
                     <i className="fa-solid fa-utensils text-4xl text-slate-700 mb-4"></i>
                     <p className="text-slate-500">
-                      {recipes.length === 0 ? 'Your vault is empty. Paste a link to start.' : 'No recipes match your filter.'}
+                      {recipes.length === 0 ? "Your vault is empty. Paste a link to start." : "No recipes match your filter."}
                     </p>
                   </div>
                 ) : (
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-8">
-                    {filteredAndSortedRecipes.map(recipe => (
+                    {filteredAndSortedRecipes.map((recipe) => (
                       <RecipeCard key={recipe.id} recipe={recipe} onClick={setSelectedRecipe} onDelete={handleDeleteRecipe} />
                     ))}
                   </div>
@@ -163,7 +243,7 @@ const App: React.FC = () => {
           </>
         )}
 
-        {currentView === 'planner' && (
+        {currentView === "planner" && (
           <section className="animate-fadeIn">
             <div className="text-center mb-12">
               <h2 className="text-4xl font-black mb-2">
@@ -183,7 +263,7 @@ const App: React.FC = () => {
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-7 gap-4">
-              {DAYS.map(day => (
+              {DAYS.map((day) => (
                 <div
                   key={day}
                   className="glass-panel p-4 rounded-2xl min-h-[350px] flex flex-col border-white/5 bg-slate-900/40"
@@ -193,8 +273,8 @@ const App: React.FC = () => {
                   </h4>
 
                   <div className="flex-1 space-y-3">
-                    {(planner[day] || []).map(rid => {
-                      const recipe = recipes.find(r => r.id === rid);
+                    {(planner[day] || []).map((rid) => {
+                      const recipe = recipes.find((r) => r.id === rid);
                       if (!recipe) return null;
                       return (
                         <div
@@ -227,7 +307,7 @@ const App: React.FC = () => {
           </section>
         )}
 
-        {currentView === 'shopping' && (
+        {currentView === "shopping" && (
           <ShoppingListView
             shoppingList={shoppingList}
             planner={planner}
@@ -239,7 +319,7 @@ const App: React.FC = () => {
           />
         )}
 
-        {currentView === 'settings' && <Settings onClearRecipes={handleClearRecipes} onClearPlanner={handleClearPlanner} />}
+        {currentView === "settings" && <Settings onClearRecipes={handleClearRecipes} onClearPlanner={handleClearPlanner} />}
       </main>
 
       {showPickerForDay && (
@@ -282,21 +362,7 @@ const App: React.FC = () => {
 
       {selectedRecipe && <RecipeEditor recipe={selectedRecipe} onSave={saveRecipe} onClose={() => setSelectedRecipe(null)} />}
 
-      {processingState === 'error' && (
-        <div className="fixed bottom-10 left-1/2 -translate-x-1/2 bg-red-500 text-white px-8 py-4 rounded-2xl shadow-2xl flex items-center gap-4 animate-bounce z-[200]">
-          <i className="fa-solid fa-circle-exclamation text-2xl"></i>
-          <div>
-            <p className="font-bold">Extraction Failed</p>
-            <p className="text-xs opacity-90">Could not find recipe data for this video. Try another link.</p>
-          </div>
-          <button
-            onClick={dismissError}
-            className="bg-white/20 hover:bg-white/30 px-4 py-1 rounded-lg font-bold text-xs transition-all"
-          >
-            Dismiss
-          </button>
-        </div>
-      )}
+      {processingState === "error" && renderErrorToast()}
     </div>
   );
 };

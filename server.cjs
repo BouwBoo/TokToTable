@@ -5,6 +5,8 @@ require("dotenv").config();
 
 const http = require("http");
 const url = require("url");
+const fs = require("fs");
+const path = require("path");
 
 // Support both styles:
 // - module.exports = function(req,res,body){...}
@@ -12,6 +14,8 @@ const url = require("url");
 // - module.exports = function(req,res){...}
 const extractModule = require("./api/extract.cjs");
 const imageModule = require("./api/image.cjs");
+const monetization = require("./api/monetization.cjs");
+
 
 const extractHandler = extractModule.handleExtract || extractModule;
 const imageHandler = imageModule.handleImage || imageModule;
@@ -46,6 +50,16 @@ async function callHandler(handler, req, res) {
   return handler(req, res);
 }
 
+function sendFile(res, filePath, contentType = "application/octet-stream") {
+  res.statusCode = 200;
+  res.setHeader("Content-Type", contentType);
+  res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  fs.createReadStream(filePath).pipe(res);
+}
+
+const FALLBACK_IMAGE = path.join(__dirname, "public", "image-fallback.jpg");
+
 const server = http.createServer(async (req, res) => {
   const { pathname } = url.parse(req.url || "", true);
 
@@ -58,15 +72,30 @@ const server = http.createServer(async (req, res) => {
     });
   }
 
-  if (pathname === "/api/extract") {
-    if (req.method !== "POST") return json(res, 405, { error: "Method not allowed" });
-    try {
-      return await callHandler(extractHandler, req, res);
-    } catch (err) {
-      return json(res, 500, { error: "Extract handler failed", detail: String(err) });
-    }
+  // ✅ Extract
+if (pathname === "/api/extract") {
+  if (req.method !== "POST") return json(res, 405, { error: "Method not allowed" });
+
+  // V3 gate: enforce limits BEFORE calling extract handler
+  const gate = monetization.checkAndIncrementExtract(req);
+  if (!gate.ok) {
+    // Optional: log for visibility
+    console.log("[V3 gate] blocked", gate.payload);
+    return json(res, gate.status, gate.payload);
   }
 
+  // Optional: log usage
+  console.log("[V3 gate] allow", { plan: gate.plan, used: gate.used, limit: gate.limit, resetAt: gate.resetAt });
+
+  try {
+    return await callHandler(extractHandler, req, res);
+  } catch (err) {
+    return json(res, 500, { error: "Extract handler failed", detail: String(err) });
+  }
+}
+
+
+  // ✅ Image endpoint (existing)
   if (pathname === "/api/image") {
     if (req.method !== "POST") return json(res, 405, { error: "Method not allowed" });
     try {
@@ -74,6 +103,34 @@ const server = http.createServer(async (req, res) => {
     } catch (err) {
       return json(res, 500, { error: "Image handler failed", detail: String(err) });
     }
+  }
+
+  // ✅ Cached thumbnail serving (same-origin via Vite proxy)
+  if (pathname.startsWith("/api/thumb/")) {
+    if (req.method !== "GET") return json(res, 405, { error: "Method not allowed" });
+
+    const id = pathname.split("/").pop();
+    if (!id) return json(res, 400, { error: "Missing id" });
+
+    const cacheDir = path.join(__dirname, ".cache", "images");
+    const metaPath = path.join(cacheDir, `${id}.json`);
+
+    try {
+      const meta = JSON.parse(fs.readFileSync(metaPath, "utf8"));
+      const filePath = path.join(cacheDir, meta.fileName);
+      if (fs.existsSync(filePath)) {
+        return sendFile(res, filePath, meta.contentType || "image/jpeg");
+      }
+    } catch {
+      // fallthrough
+    }
+
+    // Optional fallback image (prevents broken <img> in UI)
+    if (process.env.IMAGE_CACHE_FALLBACK === "1" && fs.existsSync(FALLBACK_IMAGE)) {
+      return sendFile(res, FALLBACK_IMAGE, "image/jpeg");
+    }
+
+    return json(res, 404, { error: "Not found" });
   }
 
   return json(res, 404, { error: "Not found" });

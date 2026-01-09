@@ -1,4 +1,9 @@
+// api/extract.cjs (CommonJS)
+
 const https = require("https");
+const crypto = require("crypto");
+const fs = require("fs");
+const path = require("path");
 
 const MOCK_RECIPE = {
   title: "5-Minute Garlic Butter Pasta",
@@ -18,32 +23,12 @@ function safeJsonParse(str, fallback) {
   }
 }
 
-function normalizeUnit(u) {
-  const unit = String(u || "").toLowerCase().trim();
-  if (unit === "grams" || unit === "gram") return "g";
-  if (unit === "milliliters" || unit === "milliliter") return "ml";
-  if (unit === "pieces" || unit === "piece" || unit === "pc") return "pcs";
-  if (unit === "clove" || unit === "cloves") return "pcs";
-  if (unit === "tbsp" || unit === "tablespoon" || unit === "tablespoons") return "tbsp";
-  if (unit === "tsp" || unit === "teaspoon" || unit === "teaspoons") return "tsp";
-  return unit || "pcs";
-}
-
-function normalizeKey(s) {
-  return String(s || "")
-    .trim()
-    .toLowerCase()
-    .replace(/[^\w\s-]/g, "")
-    .replace(/\s+/g, "_")
-    .replace(/_+/g, "_");
-}
-
-function extractTextFromGeminiResponse(parsed) {
-  const parts = parsed?.candidates?.[0]?.content?.parts;
-  if (!Array.isArray(parts)) return "";
-  for (const p of parts) {
-    if (p && typeof p.text === "string" && p.text.trim()) return p.text.trim();
-  }
+function extractJsonFromText(text) {
+  if (!text) return "";
+  const t = String(text);
+  const start = t.indexOf("{");
+  const end = t.lastIndexOf("}");
+  if (start >= 0 && end > start) return t.slice(start, end + 1);
   return "";
 }
 
@@ -59,41 +44,87 @@ function normalizeToRecipeShape(any) {
               .filter(Boolean)
           : [];
 
-    const ing = any.ingredients
-      .map((it) => {
-        const label = String(it.label || it.name || it.ingredientKey || "").trim() || "Ingredient";
-        const ingredientKey = normalizeKey(it.ingredientKey || label);
-        const qty = Number(it.quantity || 0);
-        const unit = normalizeUnit(it.unit);
-        return { ingredientKey, label, quantity: qty, unit };
-      })
-      .filter((i) => i.label && Number.isFinite(i.quantity));
+    const ingredients = any.ingredients
+      .map((ing) => {
+        const ingredientKey =
+          typeof ing.ingredientKey === "string"
+            ? ing.ingredientKey
+            : typeof ing.key === "string"
+              ? ing.key
+              : typeof ing.name === "string"
+                ? ing.name
+                : "";
 
-    return { title: String(any.title).trim() || "Untitled recipe", ingredients: ing, steps };
+        const label =
+          typeof ing.label === "string"
+            ? ing.label
+            : typeof ing.name === "string"
+              ? ing.name
+              : ingredientKey;
+
+        const quantity =
+          typeof ing.quantity === "number"
+            ? ing.quantity
+            : typeof ing.amount === "number"
+              ? ing.amount
+              : typeof ing.quantity === "string"
+                ? Number(ing.quantity)
+                : typeof ing.amount === "string"
+                  ? Number(ing.amount)
+                  : NaN;
+
+        const unit =
+          typeof ing.unit === "string"
+            ? ing.unit
+            : typeof ing.uom === "string"
+              ? ing.uom
+              : "pcs";
+
+        if (!ingredientKey || !label) return null;
+
+        return {
+          ingredientKey: String(ingredientKey).trim(),
+          label: String(label).trim(),
+          quantity: Number.isFinite(quantity) ? quantity : 1,
+          unit: String(unit || "pcs").trim() || "pcs",
+        };
+      })
+      .filter(Boolean);
+
+    return {
+      title: String(any.title || "").trim() || "Untitled recipe",
+      ingredients,
+      steps,
+    };
   }
 
-  if (any && typeof any === "object" && any.result) return normalizeToRecipeShape(any.result);
-
-  return MOCK_RECIPE;
+  return null;
 }
 
-function httpsJson({ hostname, path, method, headers, body }) {
+function httpsJson({ hostname, path: p, method, headers, body }) {
   return new Promise((resolve, reject) => {
-    const req = https.request({ hostname, path, method, headers }, (res) => {
-      let data = "";
-      res.on("data", (c) => (data += c));
-      res.on("end", () => {
-        resolve({
-          statusCode: res.statusCode || 0,
-          bodyText: data,
-          bodyJson: safeJsonParse(data, null),
+    const req = https.request(
+      { hostname, path: p, method, headers },
+      (res) => {
+        let data = "";
+        res.on("data", (chunk) => (data += chunk));
+        res.on("end", () => {
+          const bodyJson = safeJsonParse(data, null);
+          resolve({ statusCode: res.statusCode || 0, bodyText: data, bodyJson });
         });
-      });
-    });
+      }
+    );
     req.on("error", reject);
     if (body) req.write(body);
     req.end();
   });
+}
+
+function extractTextFromGeminiResponse(parsed) {
+  const cands = parsed?.candidates;
+  const parts = cands?.[0]?.content?.parts;
+  const text = parts?.map((p) => p?.text).filter(Boolean).join("\n");
+  return text || "";
 }
 
 async function listModels(apiKey) {
@@ -125,7 +156,8 @@ function rankModels(models) {
     if (n.includes("pro")) return 80;
     return 50;
   };
-  return models.slice().sort((a, b) => score(b) - score(a));
+  const arr = Array.isArray(models) ? models : [];
+  return arr.slice().sort((a, b) => score(b) - score(a));
 }
 
 /**
@@ -142,7 +174,6 @@ async function fetchTikTokOEmbed(videoUrl) {
       headers: { "Content-Type": "application/json", "User-Agent": "TokToTable/1.0" },
     });
 
-    // TikTok may return HTML on blocks; handle gracefully.
     const j = resp.bodyJson;
     if (!j || typeof j !== "object") return null;
 
@@ -154,6 +185,151 @@ async function fetchTikTokOEmbed(videoUrl) {
   } catch {
     return null;
   }
+}
+
+/* ---------------- image cache (optional, never breaks extract) ---------------- */
+
+function sha1(s) {
+  return crypto.createHash("sha1").update(String(s)).digest("hex");
+}
+
+function cacheDirPath() {
+  return path.resolve(__dirname, "..", ".cache", "images");
+}
+
+function ensureDir(p) {
+  fs.mkdirSync(p, { recursive: true });
+}
+
+function pruneCache(dir, max) {
+  try {
+    const entries = fs.readdirSync(dir).map((name) => ({
+      name,
+      mtime: fs.statSync(path.join(dir, name)).mtimeMs,
+    }));
+    entries.sort((a, b) => a.mtime - b.mtime);
+    while (entries.length > max) {
+      const victim = entries.shift();
+      if (!victim) break;
+      fs.rmSync(path.join(dir, victim.name));
+    }
+  } catch {
+    // ignore
+  }
+}
+
+function extFromContentType(ct) {
+  const c = String(ct || "").toLowerCase();
+  if (c.includes("png")) return "png";
+  if (c.includes("webp")) return "webp";
+  if (c.includes("jpeg") || c.includes("jpg")) return "jpg";
+  return null;
+}
+
+function httpsGetBuffer(urlStr, redirectsLeft = 3) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(urlStr);
+    const req = https.request(
+      {
+        method: "GET",
+        hostname: u.hostname,
+        path: u.pathname + (u.search || ""),
+        headers: { "User-Agent": "TokToTable/1.0" },
+      },
+      (res) => {
+        const status = res.statusCode || 0;
+
+        if ([301, 302, 303, 307, 308].includes(status) && res.headers.location && redirectsLeft > 0) {
+          res.resume();
+          const next = new URL(res.headers.location, urlStr).toString();
+          return resolve(httpsGetBuffer(next, redirectsLeft - 1));
+        }
+
+        if (status < 200 || status >= 300) {
+          res.resume();
+          return reject(new Error(`Image download failed (status ${status})`));
+        }
+
+        const contentType = String(res.headers["content-type"] || "");
+        const chunks = [];
+        let total = 0;
+        const MAX = 2_000_000;
+
+        res.on("data", (c) => {
+          total += c.length;
+          if (total > MAX) {
+            req.destroy(new Error("Image too large"));
+            return;
+          }
+          chunks.push(c);
+        });
+
+        res.on("end", () => resolve({ buffer: Buffer.concat(chunks), contentType }));
+      }
+    );
+
+    req.setTimeout(10_000, () => req.destroy(new Error("Image download timeout")));
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+async function maybeCacheThumbnail(thumbnailUrl) {
+  if (process.env.ENABLE_IMAGE_CACHE !== "1") return null;
+  if (!thumbnailUrl) return null;
+
+  const id = sha1(thumbnailUrl).slice(0, 16);
+  const dir = cacheDirPath();
+  ensureDir(dir);
+
+  const metaPath = path.join(dir, `${id}.json`);
+  if (fs.existsSync(metaPath)) {
+    try {
+      const meta = JSON.parse(fs.readFileSync(metaPath, "utf8"));
+      const filePath = path.join(dir, meta.fileName);
+      if (fs.existsSync(filePath)) return { id };
+    } catch {
+      // re-download
+    }
+  }
+
+  try {
+    const { buffer, contentType } = await httpsGetBuffer(thumbnailUrl);
+    const ext = extFromContentType(contentType);
+    if (!ext) return null;
+
+    const fileName = `${id}.${ext}`;
+    const filePath = path.join(dir, fileName);
+
+    fs.writeFileSync(filePath, buffer);
+    fs.writeFileSync(metaPath, JSON.stringify({ id, fileName, contentType }, null, 2));
+
+    const max = Number(process.env.IMAGE_CACHE_MAX || 200);
+    pruneCache(dir, max);
+
+    return { id };
+  } catch {
+    return null;
+  }
+}
+
+/* ---------------- mismatch guard ---------------- */
+
+function titleSimilarity(a, b) {
+  const norm = (s) =>
+    String(s || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, " ")
+      .split(/\s+/)
+      .filter((x) => x.length >= 3);
+
+  const A = new Set(norm(a));
+  const B = new Set(norm(b));
+  if (A.size === 0 || B.size === 0) return 0;
+
+  let inter = 0;
+  for (const x of A) if (B.has(x)) inter++;
+  return inter / Math.max(A.size, B.size); // 0..1
 }
 
 async function callGemini({ apiKey, model, inputText }) {
@@ -191,7 +367,7 @@ ${inputText}
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "Content-Length": Buffer.byteLength(payload),
+      "User-Agent": "TokToTable/1.0",
     },
     body: payload,
   });
@@ -200,6 +376,7 @@ ${inputText}
 async function handleExtract(req, res, body) {
   const apiKey = process.env.GEMINI_API_KEY;
 
+  // keep existing behavior: if no key, return mock recipe
   if (!apiKey) {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ ok: true, source: "mock", recipe: MOCK_RECIPE }));
@@ -211,36 +388,46 @@ async function handleExtract(req, res, body) {
   const text = typeof payload.text === "string" ? payload.text.trim() : "";
   const caption = typeof payload.caption === "string" ? payload.caption.trim() : "";
 
-  // --- Build best possible input context ---
+  if (!url && !text && !caption) {
+    res.writeHead(400, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ ok: false, error: "Missing url, caption or text" }));
+    return;
+  }
+
+  // Always try to get TikTok meta if URL looks like TikTok (helps quality + guards mismatch)
   let creator = null;
   let thumbnail_url = null;
+  let metaTitle = null;
 
-  let inputText = text || caption || url || "Extract a cooking recipe.";
-
-  // If caller only sends URL, try TikTok oEmbed for context
-  if (!text && !caption && url && url.includes("tiktok.com")) {
+  if (url && url.includes("tiktok.com")) {
     const meta = await fetchTikTokOEmbed(url);
     if (meta) {
+      metaTitle = meta.title || null;
       creator = meta.author_name ? `@${meta.author_name.replace(/^@/, "")}` : null;
       thumbnail_url = meta.thumbnail_url || null;
 
-      const metaBlock = [
-        "TIKTOK META:",
-        meta.title ? `- Title: ${meta.title}` : "- Title: (unknown)",
-        creator ? `- Creator: ${creator}` : "- Creator: (unknown)",
-        `- URL: ${url}`,
-        "",
-        "Use the meta above as context for the recipe extraction.",
-      ].join("\n");
-
-      inputText = metaBlock;
+      // ✅ optional caching behind flag
+      if (thumbnail_url) {
+        const cached = await maybeCacheThumbnail(thumbnail_url);
+        if (cached?.id) thumbnail_url = `/api/thumb/${cached.id}`;
+      }
     }
   }
 
+  // Build input context (metaTitle included to reduce drift)
+  const inputText = [
+    url ? `URL:\n${url}` : "",
+    metaTitle ? `TikTok title:\n${metaTitle}` : "",
+    caption ? `Caption:\n${caption}` : "",
+    text ? `Text:\n${text}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n") || "Extract a cooking recipe.";
+
   const lm = await listModels(apiKey);
-  if (!lm.ok || lm.models.length === 0) {
+  if (!lm.ok || !Array.isArray(lm.models) || lm.models.length === 0) {
     res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ ok: true, source: "mock-fallback", recipe: MOCK_RECIPE }));
+    res.end(JSON.stringify({ ok: true, source: "mock-fallback", recipe: MOCK_RECIPE, creator, thumbnail_url }));
     return;
   }
 
@@ -250,6 +437,7 @@ async function handleExtract(req, res, body) {
   models = rankModels(models).slice(0, 5);
 
   const attempts = [];
+  const hasUserContext = Boolean((caption && caption.length > 0) || (text && text.length > 0));
 
   for (const model of models) {
     const resp = await callGemini({ apiKey, model, inputText });
@@ -258,33 +446,54 @@ async function handleExtract(req, res, body) {
 
     attempts.push({ model, statusCode: resp.statusCode, hasText: !!textOut });
 
-    if (textOut) {
-      // Defensive: strip possible ```json fences
-      let cleaned = textOut.trim();
-      cleaned = cleaned.replace(/^```[a-zA-Z]*\s*/m, "").replace(/```$/m, "").trim();
-      cleaned = cleaned.replace(/^\s*```/, "").replace(/```\s*$/, "").trim();
+    if (!textOut) continue;
 
-      const raw = safeJsonParse(cleaned, null);
-      if (!raw) continue;
+    const jsonCandidate = extractJsonFromText(textOut);
+    const recipeObj = safeJsonParse(jsonCandidate, null);
+    const recipe = normalizeToRecipeShape(recipeObj);
 
-      const recipe = normalizeToRecipeShape(raw);
+    if (!recipe) continue;
 
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(
-        JSON.stringify({
-          ok: true,
-          source: "gemini",
-          model,
-          creator,
-          thumbnail_url,
-          recipe,
-          sources: url ? [{ title: url, uri: url }] : [],
-        })
-      );
-      return;
+    // ✅ Guard: if user-provided context exists and metaTitle exists, detect mismatch
+    if (hasUserContext && metaTitle && recipe.title) {
+      const sim = titleSimilarity(metaTitle, recipe.title);
+      if (sim < 0.2) {
+        // Fail fast: better than saving wrong recipe under correct thumbnail.
+        res.writeHead(409, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({
+            ok: false,
+            error: "Context mismatch",
+            detail: {
+              metaTitle,
+              recipeTitle: recipe.title,
+              similarity: sim,
+            },
+            debug: attempts,
+            creator,
+            thumbnail_url,
+          })
+        );
+        return;
+      }
     }
+
+    // Success
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(
+      JSON.stringify({
+        ok: true,
+        source: "gemini",
+        recipe,
+        creator,
+        thumbnail_url,
+        debug: attempts,
+      })
+    );
+    return;
   }
 
+  // Fallback: never hard-fail
   res.writeHead(200, { "Content-Type": "application/json" });
   res.end(
     JSON.stringify({
@@ -295,7 +504,6 @@ async function handleExtract(req, res, body) {
       recipe: MOCK_RECIPE,
       creator,
       thumbnail_url,
-      sources: url ? [{ title: url, uri: url }] : [],
     })
   );
 }

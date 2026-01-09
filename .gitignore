@@ -1,9 +1,15 @@
+# dependencies
 node_modules
-.env
-dist
-.env.local
-.DS_Store
 
-printf "\n# macOS\n.DS_Store\n" >> .gitignore
-.DS_Store
+# env
+.env
+.env.local
+
+# build
+dist
+
+# runtime cache
+.cache/
+
+# macOS
 .DS_Store

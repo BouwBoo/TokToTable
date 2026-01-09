@@ -1,119 +1,73 @@
 # TokToTable
 
-TokToTable is a lightweight web app that helps you turn TikTok food
-videos into structured menus. It's built for creators, ghost kitchens,
-and food entrepreneurs who want to go from inspiration to execution
-faster.
+TokToTable turns TikTok food videos into structured, usable recipes you can actually cook from.
 
-The app focuses on **flow, structure, and ownership** --- not "AI
-magic". AI is used as an assistant, not a dependency.
+The product is built **local-first**, with a strong focus on clarity, ownership, and practical cooking workflows — not feeds, not social features.
 
-------------------------------------------------------------------------
+---
 
-## ✨ What TokToTable does
+## Status
 
--   Collect TikTok food ideas
--   Extract ingredients, dishes, and menu concepts
--   Organise them into a structured menu
--   Store everything locally during early experimentation
+- **Current stable release:** `v1.0.1`
+- **Production branch:** `main` (protected, PR-only)
+- **Active development:** `v2`
 
-> ⚠️ Important: this project is intentionally early-stage and
-> local-first.
+V1 is considered **feature-complete and stable**.  
+All new work happens on `v2` and feature branches.
 
-------------------------------------------------------------------------
+---
 
-## 🧠 Architecture principles
+## What TokToTable does
 
--   **Frontend-first**: React + TypeScript
--   **Clear separation**:
-    -   UI components → `components/`
-    -   Side effects & logic → `services/`
--   **No AI keys in the browser**
--   **No vendor lock-in**
--   **Local storage first, backend later**
+- Extracts recipes from TikTok videos
+- Structures ingredients and cooking steps
+- Allows validation and editing before saving
+- Supports planning and shopping workflows
+- Works reliably in local-first mode
 
-------------------------------------------------------------------------
+---
 
-## 🛠 Tech stack
+## Development principles
 
--   **Vite**
--   **React**
--   **TypeScript**
--   **Tailwind CSS (CDN, early-stage)**
--   **LocalStorage**
--   (Planned) Serverless backend for AI calls
+- `main` is immutable and production-only
+- Hooks are treated as public APIs (no silent contract changes)
+- UI changes require explicit intent
+- Stabilisation and feature development are separated
+- Local development must never be blocked by production safeguards
 
-------------------------------------------------------------------------
+---
 
-## 🚀 Getting started (local)
+## Documentation
 
-### 1. Clone the repo
+All project documentation lives in the `/docs` folder:
 
-``` bash
-git clone https://github.com/BouwBoo/TokToTable.git
-cd TokToTable
-```
+- Product vision and roadmap
+- Technical architecture
+- V1 recovery post-mortem
+- Marketing and landing copy
 
-### 2. Install dependencies
+Start here:
+- [`docs/00-overview.md`](docs/00-overview.md)
 
-``` bash
+---
+
+## Getting started (development)
+
+```bash
 npm install
-```
-
-### 3. Run the dev server
-
-``` bash
 npm run dev
 ```
 
-The app will be available at:
+---
 
-    http://localhost:5173
+## Versioning
 
-------------------------------------------------------------------------
+- `v1.0.0` – Post-recovery snapshot
+- `v1.0.1` – Stable V1 release (production)
+- Future releases follow semantic versioning
 
-## 🔐 Environment variables
+---
 
-Create a local `.env.local` file **(never commit this)**:
+## License
 
-``` env
-GEMINI_API_KEY=your_key_here
-```
-
-> ⚠️ Note: AI calls should **not** be made directly from the frontend.
-> This key will be used later via a backend / serverless function.
-
-------------------------------------------------------------------------
-
-## 📁 Project structure (simplified)
-
-    src/
-    ├─ components/     # UI components
-    ├─ services/       # Logic, storage, AI adapters
-    ├─ types.ts        # Shared domain types
-    ├─ constants.ts    # App constants
-    ├─ App.tsx         # App orchestration
-    ├─ index.tsx       # Entry point
-
-------------------------------------------------------------------------
-
-## 🧭 Roadmap (high level)
-
--   [ ] Move AI calls to backend / serverless function
--   [ ] Replace CDN Tailwind with build-time setup
--   [ ] Introduce domain models (MenuItem, Dish, Video)
--   [ ] Persist data beyond LocalStorage
--   [ ] Deploy (Vercel / Netlify)
-
-------------------------------------------------------------------------
-
-## 🧪 Status
-
-This project is **experimental**. Expect rapid changes, refactors, and
-sharp decisions.
-
-------------------------------------------------------------------------
-
-## 📄 License
-
-Private for now.
+Private project. All rights reserved.
