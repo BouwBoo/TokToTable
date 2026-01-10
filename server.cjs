@@ -14,6 +14,8 @@ const path = require("path");
 // - module.exports = function(req,res){...}
 const extractModule = require("./api/extract.cjs");
 const monetization = require("./api/monetization.cjs");
+const billingStatusModule = require("./api/billingStatus.cjs");
+
 
 const extractHandler =
   typeof extractModule === "function"
@@ -28,6 +30,9 @@ const imageHandler =
     : typeof extractModule.imageHandler === "function"
       ? extractModule.imageHandler
       : null;
+
+const billingStatusHandler =
+  billingStatusModule.handleBillingStatus || billingStatusModule;
 
 function json(res, status, payload) {
   res.statusCode = status;
@@ -86,6 +91,28 @@ const server = http.createServer(async (req, res) => {
       port: process.env.API_PORT || 8787,
     });
   }
+
+if (pathname === "/api/billing/status") {
+  if (req.method !== "GET") {
+    res.statusCode = 405;
+    res.end(JSON.stringify({ error: "Method not allowed" }));
+    return;
+  }
+
+  try {
+    return await callHandler(billingStatusHandler, req, res);
+  } catch (err) {
+    res.statusCode = 500;
+    res.end(
+      JSON.stringify({
+        error: "Billing status handler failed",
+        detail: String(err),
+      })
+    );
+    return;
+  }
+}
+
 
   // ✅ Extract
   if (pathname === "/api/extract") {
