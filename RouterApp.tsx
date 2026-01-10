@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-route
 import LandingPage from './pages/LandingPage';
 import AppEntry from './pages/AppEntry';
 
+
 function BillingSuccess() {
   const { search } = useLocation();
   const sessionId = new URLSearchParams(search).get("session_id") || "";
@@ -16,26 +17,19 @@ function BillingSuccess() {
       try {
         setAutoApplied("applying");
 
-        // ✅ IMPORTANT: same-origin fetch to avoid CORS
-        // Assumes your dev server proxies /api/* to the API server (8787),
-        // which is already true for /api/stripe/checkout.
-        const res = await fetch("/api/billing/status", {
-          method: "GET",
-          cache: "no-store",
-        });
+        // ✅ Checkpoint 2 (stub):
+        // Stripe success => markeer lokaal als Pro zodat:
+        // - Settings meteen "Pro" kan tonen
+        // - front-end headers x-ttt-plan = pro gaan meesturen (via baseHeaders)
+        localStorage.setItem("ttt_plan_override", "pro");
 
-        const data = await res.json();
+        // optioneel: session id bewaren voor debug
+        if (sessionId) localStorage.setItem("ttt_last_stripe_session", sessionId);
 
         if (cancelled) return;
 
-        if (data && data.pro_enabled === true) {
-          localStorage.setItem("ttt_plan_override", "pro");
-          setAutoApplied("done");
-          window.location.href = "/app";
-          return;
-        }
-
-        setAutoApplied("failed");
+        setAutoApplied("done");
+        window.location.href = "/app";
       } catch {
         if (cancelled) return;
         setAutoApplied("failed");
@@ -47,7 +41,7 @@ function BillingSuccess() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [sessionId]);
 
   return (
     <div style={{ fontFamily: "system-ui", padding: 24, maxWidth: 720, margin: "0 auto" }}>
