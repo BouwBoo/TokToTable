@@ -81,6 +81,49 @@ function baseHeaders(): Record<string, string> {
   return headers;
 }
 
+export type BillingStatusResponse = {
+  ok: true;
+  userId: string;
+  plan: "free" | "pro";
+  isPro: boolean;
+  entitlements: {
+    extracts: {
+      limit: number;
+      period: "week" | "month";
+      used: number;
+      remaining: number;
+      resetAt: string;
+    };
+  };
+  source: string;
+  asOf: string;
+};
+
+export async function fetchBillingStatus(): Promise<BillingStatusResponse> {
+  try {
+    const resp = await fetch("/api/billing/status", {
+      method: "GET",
+      headers: baseHeaders(),
+    });
+
+    if (!resp.ok) {
+      throw new ApiError("Server error.", "SERVER_ERROR", resp.status);
+    }
+
+    const data = await resp.json();
+
+    if (!data?.ok) {
+      const msg = typeof data?.error === "string" ? data.error : "Billing status failed.";
+      throw new ApiError(msg, "SERVER_ERROR", resp.status);
+    }
+
+    return data as BillingStatusResponse;
+  } catch (e: any) {
+    if (e instanceof ApiError) throw e;
+    console.error("fetchBillingStatus failed:", e);
+    throw new ApiError("Network error.", "NETWORK_ERROR");
+  }
+}
 
 /**
  * Frontend calls backend endpoint that generates an image (mock for now).

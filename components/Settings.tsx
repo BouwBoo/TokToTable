@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from "react";
+import { fetchBillingStatus, BillingStatusResponse } from "../services/geminiService";
+
 
 interface SettingsProps {
   onClearRecipes: () => void;
@@ -10,6 +12,8 @@ type Plan = "free" | "pro";
 const Settings: React.FC<SettingsProps> = ({ onClearRecipes, onClearPlanner }) => {
   const [hasKey, setHasKey] = useState<boolean>(false);
   const [plan, setPlan] = useState<Plan>("free");
+  const [billingStatus, setBillingStatus] = useState<BillingStatusResponse | null>(null);
+
 
     const isDev =
     typeof window !== "undefined" &&
@@ -38,6 +42,19 @@ const Settings: React.FC<SettingsProps> = ({ onClearRecipes, onClearPlanner }) =
 
     checkKey();
     loadPlan();
+
+// Checkpoint 2.2: read-only billing status (no gating, no UI behavior change)
+(async () => {
+  try {
+    const s = await fetchBillingStatus();
+    setBillingStatus(s);
+  } catch (e) {
+    // Silent in UI: Settings must never break if API is unavailable (e.g. prod wiring later)
+    console.warn("billing status unavailable:", e);
+  }
+})();
+
+
   }, []);
 
   const handleSelectKey = async () => {
@@ -220,6 +237,14 @@ const Settings: React.FC<SettingsProps> = ({ onClearRecipes, onClearPlanner }) =
               </span>
             )}
           </div>
+          
+          {billingStatus?.entitlements?.extracts ? (
+            <p className="text-[10px] text-slate-500 mt-2">
+              Extracts: {billingStatus.entitlements.extracts.used}/{billingStatus.entitlements.extracts.limit} used •{" "}
+              {billingStatus.entitlements.extracts.remaining} left • reset:{" "}
+              {new Date(billingStatus.entitlements.extracts.resetAt).toLocaleString()}
+            </p>
+          ) : null}
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
