@@ -125,18 +125,38 @@ const App: React.FC = () => {
     setCurrentView("shopping");
   };
 
-  const handleUpgradeClick = () => {
-    // Minimal: bring user to Settings + jump to Subscription section.
-    setCurrentView("settings");
-    dismissError();
+const handleUpgradeClick = async () => {
+  // A: Direct start Stripe checkout from the limit banner (minimal wiring).
+  try {
+    const res = await fetch("/api/stripe/checkout", {
+      method: "POST",
+    });
 
-    // After render, scroll to pricing/subscription block (if present)
-    setTimeout(() => {
-      const el = document.getElementById("ttt-subscription");
-      if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
-    }, 0);
-  };
+    const data = await res.json();
 
+    if (data?.url) {
+      // Close the toast so it doesn't linger if user comes back
+      dismissError();
+      window.location.href = data.url;
+      return;
+    }
+
+    alert("Failed to start Stripe checkout");
+  } catch (e) {
+    console.warn("Stripe checkout start failed:", e);
+    alert("Failed to start Stripe checkout");
+  }
+
+  // Fallback: take user to Settings (so they can still upgrade manually)
+  setCurrentView("settings");
+  dismissError();
+
+  // Optional nice touch: jump to subscription section if present
+  setTimeout(() => {
+    const el = document.getElementById("ttt-subscription");
+    if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, 0);
+};
 
   const renderErrorToast = () => {
     const isLimit = errorKind === "limit";
