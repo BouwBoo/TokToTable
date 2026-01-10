@@ -126,10 +126,17 @@ const App: React.FC = () => {
   };
 
   const handleUpgradeClick = () => {
-    // Placeholder flow for now: take user to Settings where we’ll later wire Stripe.
+    // Minimal: bring user to Settings + jump to Subscription section.
     setCurrentView("settings");
     dismissError();
+
+    // After render, scroll to pricing/subscription block (if present)
+    setTimeout(() => {
+      const el = document.getElementById("ttt-subscription");
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 0);
   };
+
 
   const renderErrorToast = () => {
     const isLimit = errorKind === "limit";

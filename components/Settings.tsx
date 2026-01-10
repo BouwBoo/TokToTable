@@ -214,7 +214,7 @@ const Settings: React.FC<SettingsProps> = ({ onClearRecipes, onClearPlanner }) =
       </div>
 
       {/* SUBSCRIPTION / PRICING */}
-      <section className="glass-panel p-8 rounded-[32px] border-white/5 space-y-6">
+      <section id="ttt-subscription" className="glass-panel p-8 rounded-[32px] border-white/5 space-y-6">
         <div className="flex items-center justify-between gap-4 flex-wrap">
           <div className="flex items-center gap-4">
             <div className="w-12 h-12 rounded-2xl bg-emerald-500/10 flex items-center justify-center text-emerald-400">
