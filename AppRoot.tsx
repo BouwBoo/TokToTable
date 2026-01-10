@@ -89,6 +89,18 @@ const App: React.FC = () => {
     errorMeta,
   } = useRecipes();
 
+  // ✅ After successful checkout: if user is Pro, clear any lingering limit error banner
+  useEffect(() => {
+    try {
+      const plan = localStorage.getItem("ttt_plan_override");
+      if (plan === "pro") {
+        dismissError();
+      }
+    } catch {
+      // ignore
+    }
+  }, [dismissError]);
+
   const { planner, showPickerForDay, setShowPickerForDay, addToPlanner, removeFromPlanner, removeRecipeEverywhere, clearPlanner } =
     usePlanner();
 
