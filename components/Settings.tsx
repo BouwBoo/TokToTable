@@ -9,11 +9,41 @@ interface SettingsProps {
 
 type Plan = "free" | "pro";
 
+type BillingStatus = {
+  ok: boolean;
+  userId?: string;
+  plan: Plan;
+  isPro?: boolean;
+  entitlements?: {
+    extracts?: {
+      limit: number;
+      period: string;
+      used: number;
+      remaining: number;
+      resetAt: string;
+    };
+  };
+  source?: string;
+  asOf?: string;
+  error?: string;
+};
+
+
 const Settings: React.FC<SettingsProps> = ({ onClearRecipes, onClearPlanner }) => {
   const [hasKey, setHasKey] = useState<boolean>(false);
   const [plan, setPlan] = useState<Plan>("free");
   const [billingStatus, setBillingStatus] = useState<BillingStatusResponse | null>(null);
 
+const extractsInfo =
+   (billingStatus as any)?.entitlements?.extracts ||
+  ((billingStatus as any)?.limit != null
+    ? {
+     limit: (billingStatus as any).limit,
+       used: (billingStatus as any).used,
+       remaining: (billingStatus as any).remaining,
+         resetAt: (billingStatus as any).resetAt,
+      }
+    : null);
 
     const isDev =
     typeof window !== "undefined" &&
@@ -40,21 +70,28 @@ const Settings: React.FC<SettingsProps> = ({ onClearRecipes, onClearPlanner }) =
       }
     };
 
+
+
     checkKey();
     loadPlan();
 
 // Checkpoint 2.2: read-only billing status (no gating, no UI behavior change)
-(async () => {
-  try {
-    const s = await fetchBillingStatus();
-    setBillingStatus(s);
-  } catch (e) {
-    // Silent in UI: Settings must never break if API is unavailable (e.g. prod wiring later)
-    console.warn("billing status unavailable:", e);
-  }
-})();
+        (async () => {
+          try {
+            const s = await fetchBillingStatus();
+            setBillingStatus(s);
 
-
+            // Alleen backend volgen als er GEEN dev override is
+            try {
+              const override = localStorage.getItem("ttt_plan_override");
+              if (!override && (s.plan === "free" || s.plan === "pro")) {
+                setPlan(s.plan);
+              }
+            } catch {}
+          } catch (e) {
+            console.warn("billing status unavailable:", e);
+          }
+        })();
   }, []);
 
   const handleSelectKey = async () => {
@@ -237,15 +274,18 @@ const Settings: React.FC<SettingsProps> = ({ onClearRecipes, onClearPlanner }) =
               </span>
             )}
           </div>
-          
-          {billingStatus?.entitlements?.extracts ? (
-            <p className="text-[10px] text-slate-500 mt-2">
-              Extracts: {billingStatus.entitlements.extracts.used}/{billingStatus.entitlements.extracts.limit} used •{" "}
-              {billingStatus.entitlements.extracts.remaining} left • reset:{" "}
-              {new Date(billingStatus.entitlements.extracts.resetAt).toLocaleString()}
-            </p>
-          ) : null}
         </div>
+
+{extractsInfo ? (
+  <p className="text-[10px] text-slate-500 mt-2">
+    Backend: {billingStatus?.plan}
+    {billingStatus?.source ? ` (${billingStatus.source})` : ""} • Extracts:{" "}
+    {extractsInfo.used}/{extractsInfo.limit} used •{" "}
+    {extractsInfo.remaining} left • reset:{" "}
+    {new Date(extractsInfo.resetAt).toLocaleString()}
+  </p>
+) : null}
+
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           {/* FREE */}

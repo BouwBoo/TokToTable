@@ -4,6 +4,8 @@
 
 const crypto = require("crypto");
 const usageStore = require("./usageStore.cjs");
+const planStore = require("./planStore.cjs");
+
 
 // ----------------------------
 // Limits (from V3 contract)
@@ -23,6 +25,15 @@ function getPlan(req) {
   // Optional header override (used by Settings dev toggle)
   const h = String(req.headers["x-ttt-plan"] || "").trim().toLowerCase();
   if (h === "pro" || h === "free") return h;
+
+  // Stripe truth (stored via webhook). Only used if no forced plan and no header override.
+  try {
+    const userId = getAnonUserId(req);
+    const row = planStore.get(userId);
+    if (row && (row.plan === "pro" || row.plan === "free")) return row.plan;
+  } catch {
+    // ignore
+  }
 
   return "free";
 }
@@ -67,6 +78,52 @@ function startOfMonth(d) {
 function startOfNextMonth(d) {
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1, 0, 0, 0, 0));
 }
+
+// ----------------------------
+// Read-only status (no increment)
+// ----------------------------
+function getBillingStatus(req) {
+  const now = new Date();
+  const plan = getPlan(req);
+  const userId = getAnonUserId(req);
+
+  let periodKey, resetAt, limit;
+
+  if (plan === "pro") {
+    const s = startOfMonth(now);
+    const n = startOfNextMonth(now);
+    periodKey = `pro:${s.toISOString().slice(0, 7)}`; // YYYY-MM
+    resetAt = n;
+    limit = PRO_MONTHLY_EXTRACT_LIMIT;
+  } else {
+    const s = startOfIsoWeek(now);
+    const n = startOfNextIsoWeek(now);
+    periodKey = `free:${s.toISOString().slice(0, 10)}`; // YYYY-MM-DD (monday)
+    resetAt = n;
+    limit = FREE_WEEKLY_EXTRACT_LIMIT;
+  }
+
+  const key = `${userId}:extract:${periodKey}`;
+  const expectedResetAtIso = resetAt.toISOString();
+
+  // Optional housekeeping (cheap)
+  usageStore.cleanupExpired();
+
+  const row = usageStore.get(key);
+  const used = row && row.resetAtIso === expectedResetAtIso ? Number(row.count || 0) : 0;
+
+  return {
+    ok: true,
+    plan,
+    limit,
+    used,
+    remaining: Math.max(0, limit - used),
+    resetAt: expectedResetAtIso,
+    upgrade: plan === "free",
+    debug: { userId, key, db: usageStore.DB_PATH },
+  };
+}
+
 
 // ----------------------------
 // Gate + increment (persistent)
@@ -130,5 +187,7 @@ function checkAndIncrementExtract(req) {
 module.exports = {
   getPlan,
   getAnonUserId,
+  getBillingStatus,
   checkAndIncrementExtract,
 };
+
